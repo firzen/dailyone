@@ -217,9 +217,8 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 }
             }
         }
-    } else Row(Modifier.fillMaxWidth().heightIn(max = 76.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        photos.take(limit).indices.forEach { thumb(it, Modifier.weight(1f).aspectRatio(1f)) }
-        repeat(limit - minOf(photos.size, limit)) { Spacer(Modifier.weight(1f)) }
+    } else Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        photos.take(limit).indices.forEach { thumb(it, Modifier.size(68.dp)) }
     }
 }
 

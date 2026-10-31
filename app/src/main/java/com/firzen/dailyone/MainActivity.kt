@@ -20,6 +20,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -73,6 +75,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 @Composable private fun DailyOneApp(vm: JournalViewModel = viewModel()) {
     val all by vm.entries.collectAsStateWithLifecycle()
     val entries = all.filterNot { it.deleted }
+    val listState = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
     var settingsOpen by remember { mutableStateOf(false) }
     val draft = vm.draft
@@ -102,7 +105,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     } }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = if (draft == null) { if (dark) Color(0xFF252B30) else Color(0xFF333C41) } else MaterialTheme.colorScheme.background) { insets ->
         Box(Modifier.fillMaxSize().padding(insets)) {
-            if (draft == null) JournalList(entries, vm.loading, vm.busy, vm.config.url.isNotBlank(),
+            if (draft == null) JournalList(listState, entries, vm.loading, vm.busy, vm.config.url.isNotBlank(),
                 vm.store.mediaDir, { vm.open(it) }, { vm.open() }, { settingsOpen = true }, vm::sync, vm.scanProgress, startScan, vm::stopScan,
                 { entry, retain -> if (retain) keep(entry) else vm.review(entry.id, false) })
             else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete, vm::removePhoto, { keep(it) })
@@ -140,7 +143,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     }
 }
 
-@Composable private fun JournalList(entries: List<Entry>, loading: Boolean, busy: Boolean, configured: Boolean,
+@Composable private fun JournalList(listState: LazyListState, entries: List<Entry>, loading: Boolean, busy: Boolean, configured: Boolean,
     media: File, open: (Entry) -> Unit, create: () -> Unit, settings: () -> Unit, sync: () -> Unit,
     scan: ScanProgress, startScan: () -> Unit, stopScan: () -> Unit, review: (Entry, Boolean) -> Unit) {
     val dark = isSystemInDarkTheme()
@@ -180,7 +183,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                     Text("从今天开始记录", Modifier.padding(top = 18.dp), fontSize = 18.sp)
                     Text("留下一点文字，以后就能想起今天。", Modifier.padding(top = 9.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 9.dp, end = 9.dp, bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                else LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 9.dp, end = 9.dp, bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     entries.groupBy { if (it.scanDay == "unknown") "unknown" else date(it.createdAt, "yyyy-MM") }.forEach { (month, group) ->
                         item(key = "month-$month") {
                             Text(if (month == "unknown") "日期待确认" else date(group.first().createdAt, "MMMM yyyy"), Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 22.dp), fontSize = 25.sp)

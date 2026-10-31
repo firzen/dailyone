@@ -50,3 +50,7 @@ Android 日记应用，Kotlin + Jetpack Compose。离线写作，按时间浏览
 ## 设计原型
 
 `design/prototype.html` 是可交互的原型源文件，`design/index.html` 可用浏览器打开。原型数据不属于安卓应用数据。
+
+## 手机调试安装签名
+
+CI 使用临时调试密钥。为保证手机上的后续版本可以覆盖升级，先用 `scripts/sign-debug.sh input.apk output.apk` 将 CI 产物重新签名，再安装输出 APK。脚本使用本机持久化的 `~/.android/debug.keystore`，不上传或提交密钥；需设置 `JAVA_HOME` 与 `ANDROID_HOME`。首次从旧临时签名迁移时需先备份日记，不能直接卸载丢弃数据。此签名仅用于开发测试。

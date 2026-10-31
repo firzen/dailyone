@@ -62,3 +62,7 @@ Google Cloud 项目需关联结算，并启用 Maps SDK for Android、Places API
 - Key 缺失或无权限分别显示 Google 配置错误；不回显服务器错误正文、密钥或请求 URL。
 
 官方参考：[Android 地图配置](https://developers.google.com/maps/documentation/android-sdk/get-api-key)、[附近搜索](https://developers.google.com/maps/documentation/places/web-service/nearby-search)、[文本搜索](https://developers.google.com/maps/documentation/places/web-service/text-search)、[逆地理编码](https://developers.google.com/maps/documentation/geocoding/requests-reverse-geocoding)。
+
+### Google 真机联调
+
+Google 地图渲染验证只在显式传入 `live-google-map=true` 时执行，使用公开的东京站坐标和实际地图组件，等待所有瓦片完成加载的回调后截图。`live-google-place-lookup=true` 验证地点搜索、附近地点和地址解析。联调期间临时保持测试界面亮屏并在 Activity 关闭时释放，避免系统暂停后台网络；普通回归不会调用真实 Google 接口。临时地点 Key 配置文件在加密保存后删除，Android 地图 Key 仅保留在被 Git 忽略的本地构建配置。

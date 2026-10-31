@@ -92,6 +92,8 @@ class PlaceIntegrationTest {
     }
     @Test fun deviceGoogleSearchNearbyAndReverseWorkWhenExplicitlyRequested() = runBlocking {
         assumeTrue(InstrumentationRegistry.getArguments().getString("live-google-place-lookup") == "true")
+        androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+        scenario.onActivity { it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         val point = GeoPoint(35.6812, 139.7671, countryCode = "JP")
         val service = PlaceService(InstrumentationRegistry.getInstrumentation().targetContext)
         val found = service.search("東京駅", point, PlaceRegion.OTHER, "")
@@ -105,5 +107,6 @@ class PlaceIntegrationTest {
         InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply {
             putString("google_live_result", "PASS search=${found.size}, nearby=${nearby.size}, reverse=JP")
         })
+        }
     }
 }

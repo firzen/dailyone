@@ -17,10 +17,11 @@ import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.MapView
 import com.google.android.gms.maps.model.LatLng
 
-@Composable internal fun GoogleMapPanel(center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier) {
+@Composable internal fun GoogleMapPanel(center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier, onLoaded: () -> Unit = {}) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val latestMoved by rememberUpdatedState(moved)
+    val latestLoaded by rememberUpdatedState(onLoaded)
     val available = remember(context) { GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS }
     if (!available) {
         Box(modifier, contentAlignment = Alignment.Center) { Text("请安装或更新 Google Play 服务后使用地图") }; return
@@ -32,6 +33,7 @@ import com.google.android.gms.maps.model.LatLng
         view.getMapAsync { google ->
             if (!disposed) {
                 map = google
+                google.setOnMapLoadedCallback { latestLoaded() }
                 google.uiSettings.isZoomControlsEnabled = false
                 google.uiSettings.isRotateGesturesEnabled = false
                 google.uiSettings.isTiltGesturesEnabled = false
@@ -64,7 +66,7 @@ import com.google.android.gms.maps.model.LatLng
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) resume()
         onDispose {
             disposed = true; lifecycle.removeObserver(observer)
-            map?.setOnCameraMoveStartedListener(null); map?.setOnCameraIdleListener(null)
+            map?.setOnCameraMoveStartedListener(null); map?.setOnCameraIdleListener(null); map?.setOnMapLoadedCallback(null)
             stop(); view.onDestroy(); map = null
         }
     }

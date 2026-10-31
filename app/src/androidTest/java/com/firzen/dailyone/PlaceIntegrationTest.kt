@@ -109,4 +109,65 @@ class PlaceIntegrationTest {
         })
         }
     }
+    @Test fun liveProviderSwitchReloadsMapAndNearbyWithoutSavingTheDiary() {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("live-provider-switch") == "true")
+        androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            lateinit var vm: JournalViewModel
+            scenario.onActivity {
+                it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                vm = androidx.lifecycle.ViewModelProvider(it)[JournalViewModel::class.java]
+            }
+            fun awaitState(ready: () -> Boolean) {
+                val deadline = android.os.SystemClock.elapsedRealtime() + 60_000
+                while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                    var done = false
+                    scenario.onActivity { done = ready() }
+                    if (done) return
+                    Thread.sleep(100)
+                }
+                fail("Provider switch did not finish")
+            }
+            awaitState { !vm.loading }
+            val original = GeoPoint(22.282,114.158,"中环测试选点",countryCode="HK")
+            val entry = Entry(title="公开地点联调，不保存",recordedLocation=original)
+            scenario.onActivity { vm.open(entry); vm.showLocationPicker() }
+            awaitState { !vm.resolvingMap && vm.mapCenter != null }
+            var generation = 0
+            scenario.onActivity {
+                assertNull(vm.placeError); assertEquals(PlaceProvider.AMAP,vm.placeProvider)
+                assertEquals(CoordinateSystem.GCJ02,vm.mapCenter?.coordinateSystem)
+                assertTrue(vm.nearbyPlaces.isNotEmpty()); generation = vm.mapGeneration
+                vm.updatePlaceProvider(PlaceProvider.GOOGLE)
+            }
+            awaitState { !vm.resolvingMap && vm.mapCenter != null }
+            scenario.onActivity {
+                assertNull(vm.placeError); assertEquals(PlaceProvider.GOOGLE,vm.placeProvider)
+                assertTrue(vm.mapGeneration > generation)
+                assertEquals(CoordinateSystem.WGS84,vm.mapCenter?.coordinateSystem)
+                assertTrue(distanceMeters(original,requireNotNull(vm.mapCenter)) < .5)
+                assertTrue(vm.nearbyPlaces.isNotEmpty()); assertTrue(vm.nearbyPlaces.all { it.source == "Google" })
+                generation = vm.mapGeneration
+                vm.pickMapCenter(requireNotNull(vm.mapCenter).copy(latitude=original.latitude+.0001,source="Google",countryCode=""))
+            }
+            awaitState { !vm.resolvingMap }
+            scenario.onActivity {
+                assertNull(vm.placeError); assertEquals(PlaceProvider.GOOGLE,vm.placeProvider)
+                vm.updatePlaceProvider(PlaceProvider.AMAP)
+            }
+            awaitState { !vm.resolvingMap && vm.mapCenter != null }
+            scenario.onActivity {
+                assertNull(vm.placeError); assertEquals(PlaceProvider.AMAP,vm.placeProvider)
+                assertTrue(vm.mapGeneration > generation)
+                assertEquals(CoordinateSystem.GCJ02,vm.mapCenter?.coordinateSystem)
+                assertTrue(vm.nearbyPlaces.isNotEmpty()); assertTrue(vm.nearbyPlaces.all { it.source == "AMap" })
+                assertEquals(original,vm.draft?.recordedLocation)
+                assertNull(vm.store.get(entry.id))
+                vm.closeLocationPicker(); vm.back()
+            }
+            InstrumentationRegistry.getInstrumentation().sendStatus(0,android.os.Bundle().apply {
+                putString("provider_switch_result","PASS AMap -> Google -> AMap; nearby reloaded; no diary saved")
+            })
+        }
+    }
+
 }

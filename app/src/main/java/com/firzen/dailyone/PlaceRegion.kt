@@ -2,7 +2,12 @@ package com.firzen.dailyone
 
 import java.util.Locale
 
-enum class PlaceProvider { AMAP, GOOGLE }
+enum class PlaceProvider(val label: String) {
+    AMAP("高德"), GOOGLE("Google");
+    companion object {
+        fun defaultFor(point: GeoPoint?): PlaceProvider = PlaceRegion.fromPoint(point)?.provider ?: GOOGLE
+    }
+}
 enum class PlaceRegion(val label: String, val countryCode: String) {
     AUTO("自动（当前位置 / 日记位置）", ""), MAINLAND("中国大陆", "CN"),
     HONG_KONG("香港", "HK"), MACAO("澳门", "MO"), OTHER("其他地区", "");

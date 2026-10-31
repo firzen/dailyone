@@ -30,16 +30,12 @@ import androidx.compose.ui.window.DialogProperties
 @Composable internal fun LocationPicker(current: GeoPoint?, existing: GeoPoint?, results: List<GeoPoint>,
     locating: Boolean, searching: Boolean, error: String?, search: (String) -> Unit,
     retryCurrent: () -> Unit, select: (GeoPoint) -> Unit, close: () -> Unit,
-    region: PlaceRegion = PlaceRegion.AUTO, city: String = "", changeRegion: (PlaceRegion) -> Unit = {}, changeCity: (String) -> Unit = {},
+    provider: PlaceProvider = PlaceProvider.defaultFor(existing ?: current), city: String = "", changeProvider: (PlaceProvider) -> Unit = {}, changeCity: (String) -> Unit = {},
     androidKey: String = "", privacyAgreed: Boolean = false, agreePrivacy: () -> Unit = {},
     mapCenter: GeoPoint? = null, mapPick: GeoPoint? = null, nearby: List<GeoPoint> = emptyList(), resolvingMap: Boolean = false,
     focusMap: (GeoPoint) -> Unit = {}, moveMap: (GeoPoint) -> Unit = {}, distanceCenter: GeoPoint? = null,
-    moreNearby: Boolean = false, loadingMoreNearby: Boolean = false, loadMoreNearby: () -> Unit = {}, googleConfigured: Boolean = BuildConfig.GOOGLE_MAPS_CONFIGURED) {
-    val effectiveRegion = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(distanceCenter ?: existing ?: current) else region
-    val resultProvider = results.firstOrNull()?.let { when (it.source) { "Google" -> PlaceProvider.GOOGLE; "AMap" -> PlaceProvider.AMAP; else -> null } }
-    val mapProvider = resultProvider ?: PlaceRegion.fromPoint(distanceCenter)?.provider
-        ?: distanceCenter?.takeIf { it.source == "Google" }?.let { PlaceProvider.GOOGLE }
-        ?: effectiveRegion?.provider ?: PlaceProvider.AMAP
+    moreNearby: Boolean = false, loadingMoreNearby: Boolean = false, loadMoreNearby: () -> Unit = {}, googleConfigured: Boolean = BuildConfig.GOOGLE_MAPS_CONFIGURED, mapGeneration: Int = 0) {
+    val mapProvider = provider
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
@@ -62,6 +58,7 @@ import androidx.compose.ui.window.DialogProperties
         selected = point; name = point.name.ifBlank { point.address }; userSelected = true
         if (focus) { query = ""; focusMap(point) }
     }
+    LaunchedEffect(provider, mapGeneration) { query = ""; editName = false }
     LaunchedEffect(current) { if (current != null && !userSelected && (existing == null || preferCurrent)) { selected = current; name = current.name.ifBlank { current.address } } }
     LaunchedEffect(mapPick) { if (mapPick != null) choose(mapPick, false) }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
@@ -81,14 +78,13 @@ import androidx.compose.ui.window.DialogProperties
                 Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     var menu by remember { mutableStateOf(false) }
                     Box(Modifier.weight(1f)) {
-                        TextButton(onClick = { menu = true }) { Text(if (region == PlaceRegion.AUTO) "自动 · ${effectiveRegion?.label ?: "地区"}" else region.label, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        TextButton(onClick = { menu = true }) { Text(provider.label, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Icon(Icons.Outlined.ArrowDropDown, null, Modifier.size(18.dp)) }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) { PlaceRegion.entries.forEach { item ->
-                            DropdownMenuItem(text = { Text(item.label) }, onClick = { menu = false; changeRegion(item) })
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) { PlaceProvider.entries.forEach { item ->
+                            DropdownMenuItem(text = { Text(item.label) }, onClick = { menu = false; changeProvider(item) })
                         } }
                     }
-                    val area = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(distanceCenter ?: existing ?: current) else region
-                    if (area == PlaceRegion.MAINLAND || area == null) TextButton(onClick = { cityInput = city; editCity = true }) {
+                    if (provider == PlaceProvider.AMAP) TextButton(onClick = { cityInput = city; editCity = true }) {
                         Icon(Icons.Outlined.LocationCity, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text(city.ifBlank { "搜索城市" }, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 112.dp))
@@ -96,7 +92,8 @@ import androidx.compose.ui.window.DialogProperties
                     }
                 }
                 Box(Modifier.fillMaxWidth().weight(.9f).heightIn(min = 130.dp).background(MaterialTheme.colorScheme.surfaceContainer)) {
-                    when {
+                    key(provider, mapGeneration) { when {
+                        resolvingMap && mapCenter == null -> Text("正在加载地图…", Modifier.align(Alignment.Center), fontSize = 13.sp)
                         mapProvider == PlaceProvider.GOOGLE -> {
                             if (!googleConfigured) Text("Google 地图 Key 尚未配置，请配置后更新安装包", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
                             else {
@@ -115,6 +112,7 @@ import androidx.compose.ui.window.DialogProperties
                             AmapMapPanel(androidKey, (results.firstOrNull() ?: mapCenter)?.takeIf { it.coordinateSystem == CoordinateSystem.GCJ02 }, { point -> selected = null; name = ""; query = ""; userSelected = true; moveMap(point) }, Modifier.fillMaxSize())
                             Icon(Icons.Outlined.LocationOn, "地图中心选点", Modifier.align(Alignment.Center).size(38.dp).offset(y = (-18).dp), tint = MaterialTheme.colorScheme.primary)
                         }
+                    }
                     }
                     FilledTonalIconButton(onClick = { preferCurrent = true; userSelected = false; selected = current; name = current?.name.orEmpty(); query = ""; retryCurrent() }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp), enabled = !locating) {
                         Icon(Icons.Outlined.MyLocation, "回到当前位置")

@@ -10,7 +10,7 @@ import org.junit.Test
 
 class LocationPickerUiTest {
     @get:Rule val compose = createComposeRule()
-    private val current = GeoPoint(23.1, 113.3, "当前位置公园", "当前地址")
+    private val current = GeoPoint(23.1, 113.3, "当前位置公园", "当前地址", countryCode = "CN")
     @Test fun defaultsToCurrentPlaceAndDoesNotSaveUntilConfirmed() {
         var saved: GeoPoint? = null
         compose.setContent { MaterialTheme { LocationPicker(current, null, emptyList(), false, false, null,
@@ -32,7 +32,7 @@ class LocationPickerUiTest {
         compose.runOnIdle { assertEquals(result.copy(name = "河边咖啡旗舰店", nameOrigin = PlaceNameOrigin.CUSTOM), saved) }
     }
     @Test fun existingLocationStaysSelectedWhenCurrentLocationArrives() {
-        val existing = GeoPoint(24.0, 114.0, "日记里的餐厅", "日记地址")
+        val existing = GeoPoint(24.0, 114.0, "日记里的餐厅", "日记地址", countryCode = "CN")
         val gps = mutableStateOf<GeoPoint?>(null)
         var saved: GeoPoint? = null
         compose.setContent { MaterialTheme { LocationPicker(gps.value, existing, emptyList(), false, false, null,
@@ -91,6 +91,21 @@ class LocationPickerUiTest {
         compose.onNodeWithText("Google 地图 Key 尚未配置，请配置后更新安装包").assertExists()
         compose.onNodeWithText("使用此位置").performClick()
         compose.runOnIdle { assertEquals(overseas.copy(nameOrigin = PlaceNameOrigin.POI), saved) }
+    }
+
+    @Test fun providerMenuContainsOnlyAmapAndGoogleAndCallsTheSwitchAction() {
+        val provider = mutableStateOf(PlaceProvider.AMAP)
+        var switches = 0
+        compose.setContent { MaterialTheme { LocationPicker(current, current, emptyList(), false, false, null,
+            {}, {}, {}, {}, provider = provider.value, changeProvider = { provider.value = it; switches++ }, googleConfigured = false) } }
+        compose.onNodeWithText("高德").performClick()
+        compose.onNodeWithText("Google").assertExists().performClick()
+        compose.onNodeWithText("Google").assertExists()
+        compose.onNodeWithText("中国大陆").assertDoesNotExist()
+        compose.onNodeWithText("香港").assertDoesNotExist()
+        compose.onNodeWithText("澳门").assertDoesNotExist()
+        compose.onNodeWithText("其他地区").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(1, switches) }
     }
 
 }

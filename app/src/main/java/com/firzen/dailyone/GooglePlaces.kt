@@ -17,19 +17,19 @@ class GooglePlaces(private val key: String, private val client: OkHttpClient = d
     private val placesBase: HttpUrl = "https://places.googleapis.com/".toHttpUrl(),
     private val geocodingBase: HttpUrl = "https://maps.googleapis.com/".toHttpUrl()) {
     init { require(validGoogleKey(key)) { "请填写有效的 Google 地点服务 Key" } }
-    suspend fun search(query: String, near: GeoPoint?): List<GeoPoint> {
+    suspend fun search(query: String, near: GeoPoint?, includeAmapRegions: Boolean = false): List<GeoPoint> {
         val body = JSONObject().put("textQuery", query.trim()).put("languageCode", "zh-CN").put("pageSize", 20)
-        val center = near?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 && PlaceRegion.fromPoint(it)?.provider != PlaceProvider.AMAP }
+        val center = near?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 && (includeAmapRegions || PlaceRegion.fromPoint(it)?.provider != PlaceProvider.AMAP) }
         if (center != null) body.put("locationBias", JSONObject().put("circle", circle(center, 50000.0)))
-        val found = parsePlaces(post("v1/places:searchText", body))
+        val found = parsePlaces(post("v1/places:searchText", body), includeAmapRegions)
         return if (center == null) found else nearestPlaces(found, center)
     }
-    suspend fun nearby(point: GeoPoint): List<GeoPoint> {
+    suspend fun nearby(point: GeoPoint, includeAmapRegions: Boolean = false): List<GeoPoint> {
         require(point.coordinateSystem == CoordinateSystem.WGS84) { "Google 地图需要 GPS 坐标，不能使用高德坐标" }
         val body = JSONObject().put("languageCode", "zh-CN").put("maxResultCount", 20).put("rankPreference", "DISTANCE")
             .put("locationRestriction", JSONObject().put("circle", circle(point, 1000.0)))
         // Nearby Search (New) has no pagination token and supports at most 20 places.
-        return nearestPlaces(parsePlaces(post("v1/places:searchNearby", body)), point)
+        return nearestPlaces(parsePlaces(post("v1/places:searchNearby", body), includeAmapRegions), point)
     }
     suspend fun reverse(point: GeoPoint): GeoPoint? {
         require(point.coordinateSystem == CoordinateSystem.WGS84) { "Google 地址解析需要 GPS 坐标" }
@@ -94,10 +94,10 @@ class GooglePlaces(private val key: String, private val client: OkHttpClient = d
             override fun onResponse(call: Call, response: Response) { continuation.resume(response) { response.close() } }
         })
     }
-    private fun parsePlaces(root: JSONObject): List<GeoPoint> {
+    private fun parsePlaces(root: JSONObject, includeAmapRegions: Boolean): List<GeoPoint> {
         val places = root.optJSONArray("places") ?: return emptyList()
         return (0 until places.length()).mapNotNull { parsePlace(places.optJSONObject(it)) }
-            .filter { PlaceRegion.fromPoint(it)?.provider == PlaceProvider.GOOGLE }
+            .filter { includeAmapRegions || PlaceRegion.fromPoint(it)?.provider == PlaceProvider.GOOGLE }
             .distinctBy { it.poiId.ifBlank { it.coordinateKey() + it.name } }
     }
     companion object {

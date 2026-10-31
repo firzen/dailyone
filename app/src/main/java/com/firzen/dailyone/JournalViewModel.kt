@@ -88,7 +88,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         loadingMoreNearby = true; placeError = null
         mapJob = viewModelScope.launch {
             try {
-                val points = places.nearby(center, page)
+                val points = places.nearby(center, page, placeProvider)
                 if (session == placeSession && revision == mapRevision) {
                     nearbyPlaces = (nearbyPlaces + points).distinctBy { it.poiId.ifBlank { it.coordinateKey() + it.name } }
                     nearbyPage = page; moreNearby = points.size == 25
@@ -102,17 +102,27 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     private var mapRevision = 0
     private var mapUserInteracted = false
     fun userFocusMap(point: GeoPoint) { mapUserInteracted = true; focusMap(point) }
-    fun focusMap(point: GeoPoint) {
+    fun focusMap(point: GeoPoint, refreshSelection: Boolean = false) {
         val session = placeSession; val revision = ++mapRevision
         mapJob?.cancel(); resolvingMap = true; resetNearby(); mapPick = null; placeError = null
         searchRevision++; searchJob?.cancel(); searchingPlaces = false; placeResults = emptyList()
         mapJob = viewModelScope.launch {
             try {
-                val mapped = places.mapCoordinate(point)
+                val provider = if (providerWasChosen) placeProvider else places.defaultProvider(point)
+                if (session != placeSession || revision != mapRevision) return@launch
+                placeProvider = provider
+                val mapped = places.mapCoordinate(point, provider)
                 if (session != placeSession || revision != mapRevision) return@launch
                 mapCenter = mapped; mapAnchor = mapped
                 if (!cityWasEdited) searchCity = point.city
-                val nearby = places.nearby(mapped)
+                if (refreshSelection) {
+                    val named = try { places.reverse(mapped, provider) }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { null }
+                    if (session != placeSession || revision != mapRevision) return@launch
+                    mapPick = named ?: mapped.copy(name = "地图选点", poiId = "", source = if (provider == PlaceProvider.GOOGLE) "Google" else "AMap")
+                }
+                val nearby = places.nearby(mapped, provider = provider)
                 if (session == placeSession && revision == mapRevision) firstNearby(nearby)
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession && revision == mapRevision) placeError = e.message ?: "地图位置加载失败" }
@@ -130,12 +140,13 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         mapJob?.cancel(); mapPick = null; resolvingMap = true; placeError = null
         mapJob = viewModelScope.launch {
             try {
-                val named = places.reverse(point) ?: error("未找到该位置的地址")
-                val mapped = places.mapCoordinate(named)
+                val provider = placeProvider
+                val named = places.reverse(point, provider) ?: error("未找到该位置的地址")
+                val mapped = places.mapCoordinate(named, provider)
                 if (session != placeSession || revision != mapRevision) return@launch
                 mapPick = named; mapAnchor = mapped
                 if (mapped.coordinateSystem != point.coordinateSystem) mapCenter = mapped
-                val nearby = places.nearby(mapped)
+                val nearby = places.nearby(mapped, provider = provider)
                 if (session == placeSession && revision == mapRevision) { mapPick = named; mapAnchor = mapped; firstNearby(nearby); if (!cityWasEdited) searchCity = named.city }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession && revision == mapRevision) placeError = e.message ?: "选点地址解析失败" }
@@ -163,13 +174,19 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun stopShopRefresh() { shopRefresh?.stop?.set(true) }
-    var searchRegion by mutableStateOf(PlaceRegion.AUTO); private set
+    var placeProvider by mutableStateOf(PlaceProvider.GOOGLE); private set
+    var mapGeneration by mutableStateOf(0); private set
+    private var providerWasChosen = false
     var searchCity by mutableStateOf(""); private set
     private var cityWasEdited = false
-    fun updateSearchRegion(value: PlaceRegion) {
+    fun updatePlaceProvider(value: PlaceProvider) {
+        if (value == placeProvider) return
+        val point = mapAnchor ?: mapCenter ?: mapPick ?: draft?.location ?: currentPlace
+        placeProvider = value; providerWasChosen = true; mapUserInteracted = true; mapGeneration++
+        mapRevision++; mapJob?.cancel(); currentPlaceJob?.cancel(); locating = false
         searchRevision++; searchJob?.cancel(); searchingPlaces = false; placeResults = emptyList(); placeError = null
-        searchRegion = value
-        if (!cityWasEdited && value == PlaceRegion.MAINLAND) searchCity = currentPlace?.takeIf { PlaceRegion.fromPoint(it) == PlaceRegion.MAINLAND }?.city.orEmpty()
+        mapCenter = null; mapAnchor = null; mapPick = null; resetNearby(); resolvingMap = false
+        if (point != null) focusMap(point, refreshSelection = true)
     }
     fun updateSearchCity(value: String) { searchCity = value; cityWasEdited = true }
     private val places by lazy { PlaceService(getApplication()) }
@@ -187,7 +204,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         if (draft == null) return
         locationPickerOpen = true; placeSession++; currentPlace = null
         placeResults = emptyList(); placeError = null
-        searchRegion = PlaceRegion.AUTO; searchCity = ""; cityWasEdited = false
+        placeProvider = PlaceProvider.defaultFor(draft?.location); providerWasChosen = false; mapGeneration++; searchCity = ""; cityWasEdited = false
         mapCenter = null; mapAnchor = null; mapPick = null; resetNearby(); resolvingMap = false; mapUserInteracted = draft?.location != null
         searchRevision++; searchJob?.cancel(); searchingPlaces = false
         searchCity = draft?.location?.city.orEmpty()
@@ -208,10 +225,10 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                     ?: error("暂未获取到当前位置，仍可搜索地点或稍后重试")
                 if (session != placeSession) return@launch
                 currentPlace = point
-                val named = try { places.reverse(point) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+                val named = try { if (providerWasChosen) places.reverse(point, placeProvider) else places.reverse(point) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
                 if (session == placeSession) {
                     currentPlace = named ?: point
-                    if (!cityWasEdited && !mapUserInteracted) searchCity = currentPlace?.takeIf { searchRegion == PlaceRegion.AUTO || PlaceRegion.fromPoint(it) == searchRegion }?.city.orEmpty()
+                    if (!cityWasEdited && !mapUserInteracted) searchCity = currentPlace?.city.orEmpty()
                     if (!mapUserInteracted) focusMap(currentPlace ?: point)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -228,7 +245,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         searchJob = viewModelScope.launch {
             try {
                 if (resolvingMap) mapJob?.join()
-                val results = places.search(query, mapAnchor ?: currentPlace ?: draft?.location, searchRegion, searchCity)
+                val results = places.search(query, mapAnchor ?: currentPlace ?: draft?.location, placeProvider, searchCity)
                 if (session == placeSession && revision == searchRevision) {
                     placeResults = results
                     if (results.isEmpty()) placeError = "未找到该地点，请尝试完整名称、其他城市或详细地址"

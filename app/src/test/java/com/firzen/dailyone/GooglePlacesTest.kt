@@ -76,4 +76,11 @@ class GooglePlacesTest {
         assertEquals(listOf(PlaceAttribution("来源名称", "https://example.com/credit")), point.attributions)
         assertEquals(point, GeoPoint.parse(point.json()))
     }
+    @Test fun explicitGoogleSelectionCanSearchWithinAmapRegions() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"places":[${poi("hk", "中环地点",22.282,114.158,"HK")}]}"""))
+        val center = GeoPoint(22.282,114.158,countryCode="HK")
+        assertEquals("中环地点", google.search("中环", center, includeAmapRegions = true).single().name)
+        assertTrue(JSONObject(server.takeRequest().body.readUtf8()).has("locationBias"))
+    }
+
 }

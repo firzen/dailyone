@@ -16,4 +16,10 @@ class PlaceRegionTest {
         assertNull(PlaceRegion.fromPoint(GeoPoint(22.0, 105.0)))
         assertThrows(IllegalArgumentException::class.java) { PlaceRegion.resolve(PlaceRegion.AUTO, GeoPoint(22.0, 105.0)) }
     }
+    @Test fun pickerDefaultsToAmapOnlyForTheThreeDetectedRegions() {
+        for (country in listOf("CN", "HK", "MO")) assertEquals(PlaceProvider.AMAP, PlaceProvider.defaultFor(GeoPoint(0.0, 0.0, countryCode = country)))
+        for (country in listOf("JP", "TW", "US", "")) assertEquals(PlaceProvider.GOOGLE, PlaceProvider.defaultFor(GeoPoint(0.0, 0.0, countryCode = country)))
+        assertEquals(PlaceProvider.GOOGLE, PlaceProvider.defaultFor(null))
+    }
+
 }

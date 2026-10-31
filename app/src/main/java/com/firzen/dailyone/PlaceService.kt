@@ -37,18 +37,34 @@ class PlaceService(context: Context) : PlaceLookup {
     }
     private suspend fun identify(point: GeoPoint): GeoPoint = if (point.countryCode.isBlank() && point.coordinateSystem == CoordinateSystem.WGS84)
         systemReverse(point)?.let { named -> point.copy(countryCode = named.countryCode, city = named.city) } ?: point else point
-    suspend fun mapCoordinate(point: GeoPoint): GeoPoint {
-        val identified = identify(point)
-        if (PlaceRegion.fromPoint(identified)?.provider == PlaceProvider.GOOGLE) {
-            require(identified.coordinateSystem == CoordinateSystem.WGS84) { "Google 地图需要原始 GPS 坐标" }
-            return identified
+    private val gpsPoints = java.util.concurrent.ConcurrentHashMap<String, GeoPoint>()
+    suspend fun defaultProvider(point: GeoPoint): PlaceProvider = PlaceProvider.defaultFor(identify(point))
+    suspend fun mapCoordinate(point: GeoPoint, provider: PlaceProvider? = null): GeoPoint {
+        val identified = if (provider == null) identify(point) else point
+        val selected = provider ?: PlaceProvider.defaultFor(identified)
+        if (selected == PlaceProvider.GOOGLE) {
+            if (identified.coordinateSystem == CoordinateSystem.WGS84) return identified
+            gpsPoints[identified.coordinateKey()]?.let { return it }
+            return invertMapCoordinate(identified) { amapClient().toMapCoordinate(it) }
+                .also { gpsPoints[identified.coordinateKey()] = it }
         }
-        return amapClient().toMapCoordinate(identified)
+        return amapClient().toMapCoordinate(identified).copy(countryCode = identified.countryCode, city = identified.city).also { mapped ->
+            if (identified.coordinateSystem == CoordinateSystem.WGS84) gpsPoints[mapped.coordinateKey()] = identified
+        }
     }
-    suspend fun nearby(point: GeoPoint, page: Int = 1): List<GeoPoint> =
-        if (PlaceRegion.fromPoint(point)?.provider == PlaceProvider.GOOGLE) {
-            if (page == 1) googleClient().nearby(point) else emptyList()
+    suspend fun nearby(point: GeoPoint, page: Int = 1, provider: PlaceProvider? = null): List<GeoPoint> =
+        if ((provider ?: PlaceProvider.defaultFor(point)) == PlaceProvider.GOOGLE) {
+            if (page == 1) googleClient().nearby(mapCoordinate(point, PlaceProvider.GOOGLE), includeAmapRegions = provider != null) else emptyList()
         } else amapClient().nearby(point, page)
+    suspend fun reverse(point: GeoPoint, provider: PlaceProvider): GeoPoint? {
+        val mapped = mapCoordinate(point, provider)
+        return if (provider == PlaceProvider.GOOGLE) googleClient().reverse(mapped) else amapClient().reverse(mapped)
+    }
+    suspend fun search(query: String, near: GeoPoint?, provider: PlaceProvider, city: String): List<GeoPoint> {
+        val center = near?.let { mapCoordinate(it, provider) }
+        return if (provider == PlaceProvider.GOOGLE) googleClient().search(query, center, includeAmapRegions = true)
+        else search(query, center, PlaceRegion.fromPoint(center)?.takeIf { it.provider == PlaceProvider.AMAP } ?: PlaceRegion.MAINLAND, city)
+    }
     suspend fun refreshShop(point: GeoPoint): GeoPoint {
         val identified = if (point.countryCode.isBlank() && point.coordinateSystem == CoordinateSystem.WGS84) systemReverse(point) ?: point else point
         if (PlaceRegion.fromPoint(identified)?.provider != PlaceProvider.AMAP) throw UnsupportedOperationException("地区未知或属于其他地区，Google 店铺更新尚未接入")

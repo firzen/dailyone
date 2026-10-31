@@ -97,13 +97,13 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             } finally { importing = false }
         }
     }
-    fun setPhotoTimePreference(value: PhotoTimePreference) {
+    fun updatePhotoTimePreference(value: PhotoTimePreference) {
         photoTimePreference = value
         preferences.edit().putString("photo_time", value.name).apply()
     }
     fun choosePhotoTime(use: Boolean, remember: Boolean) {
         val prompt = photoTimePrompt ?: return
-        if (remember) setPhotoTimePreference(if (use) PhotoTimePreference.USE else PhotoTimePreference.KEEP)
+        if (remember) updatePhotoTimePreference(if (use) PhotoTimePreference.USE else PhotoTimePreference.KEEP)
         if (use) draft?.takeIf { it.id == prompt.entryId }?.let { change(it.copy(createdAt = prompt.timestamp)) }
         photoTimePrompt = null
     }

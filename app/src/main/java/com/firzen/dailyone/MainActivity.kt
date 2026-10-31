@@ -104,7 +104,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             if (settingsOpen) {
                 ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
-                    CloudForm(vm.config, vm.busy, vm.settingsError, vm.photoTimePreference, vm::setPhotoTimePreference, { vm.configure(it) { settingsOpen = false } })
+                    CloudForm(vm.config, vm.busy, vm.settingsError, vm.photoTimePreference, vm::updatePhotoTimePreference, { vm.configure(it) { settingsOpen = false } })
                 }
             }
         }
@@ -282,7 +282,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 }
 
 @Composable private fun CloudForm(config: CloudConfig, busy: Boolean, error: String?, photoTimePreference: PhotoTimePreference,
-    setPhotoTimePreference: (PhotoTimePreference) -> Unit, save: (CloudConfig) -> Unit) {
+    updatePhotoTimePreference: (PhotoTimePreference) -> Unit, save: (CloudConfig) -> Unit) {
     var url by remember(config) { mutableStateOf(config.url) }
     var username by remember(config) { mutableStateOf(config.username) }
     var password by remember(config) { mutableStateOf(config.password) }
@@ -295,7 +295,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 TextButton(onClick = { photoTimeMenu = true }) { Text(photoTimePreference.label) }
                 DropdownMenu(expanded = photoTimeMenu, onDismissRequest = { photoTimeMenu = false }) {
                     PhotoTimePreference.entries.forEach { option ->
-                        DropdownMenuItem(text = { Text(option.label) }, onClick = { setPhotoTimePreference(option); photoTimeMenu = false })
+                        DropdownMenuItem(text = { Text(option.label) }, onClick = { updatePhotoTimePreference(option); photoTimeMenu = false })
                     }
                 }
             }

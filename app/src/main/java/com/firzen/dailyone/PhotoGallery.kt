@@ -115,7 +115,7 @@ import java.io.File
                     }
                     AsyncImage(File(media, photos[index]), "图片 ${index + 1}，共 ${photos.size} 张", Modifier.fillMaxSize()
                         .pointerInput(Unit) { detectTapGestures(onDoubleTap = { scale = if (scale > 1f) 1f else 2.5f; offset = Offset.Zero; zoomed = scale > 1f }) }
-                        .transformable(transform)
+                        .transformable(state = transform, canPan = { scale > 1.01f })
                         .graphicsLayer { scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y },
                         contentScale = ContentScale.Fit)
                 }

@@ -28,9 +28,10 @@ class OriginalPhotoTest {
             source.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 96, it) }
             png.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
             bitmap.recycle()
-            ExifInterface(source).apply { setLatLong(31.2304, 121.4737); saveAttributes() }
+            ExifInterface(source).apply { setLatLong(31.2304, 121.4737); setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_ROTATE_90.toString()); saveAttributes() }
             val imported = store.importPhoto(Uri.fromFile(source))
             assertEquals(fileSha256(source), fileSha256(File(store.mediaDir, imported)))
+            assertEquals(1700f / 3200f, photoAspect(File(store.mediaDir, imported)), 0.0001f)
             assertEquals(31.2304, requireNotNull(store.knownPhotoLocation(imported)).latitude, 0.00001)
             val alpha = store.importPhoto(Uri.fromFile(png))
             assertTrue(alpha.endsWith(".png"))
@@ -38,14 +39,17 @@ class OriginalPhotoTest {
             val old = "${UUID.randomUUID()}.jpg"
             File(store.mediaDir, old).writeBytes(store.encodePhoto(Uri.fromFile(source)))
             assertNotEquals(fileSha256(source), fileSha256(File(store.mediaDir, old)))
-            val entry = Entry(title = "标题", body = "文字", createdAt = 100, photos = listOf(alpha, old), dirty = false)
+            val duplicate = "${UUID.randomUUID()}.jpg"
+            File(store.mediaDir, old).copyTo(File(store.mediaDir, duplicate))
+            val entry = Entry(title = "标题", body = "文字", createdAt = 100, photos = listOf(alpha, old, duplicate), dirty = false)
             val candidate = Entry(photos = listOf(old), candidate = true, dirty = false)
             store.save(entry); store.save(candidate)
             val result = GeoBackfill(context, store) { listOf(Uri.fromFile(source), Uri.fromFile(png)) }.run {}
-            assertEquals(1, result.replaced); assertEquals(0, result.remaining)
+            assertEquals(2, result.replaced); assertEquals(0, result.remaining)
             val restored = requireNotNull(store.get(entry.id))
             assertEquals(100L, restored.createdAt); assertEquals("文字", restored.body)
             assertEquals(alpha, restored.photos.first()); assertTrue(restored.dirty)
+            assertEquals(3, restored.photos.size); assertEquals(3, restored.photos.distinct().size)
             val replacement = restored.photos.last()
             assertNotEquals(old, replacement)
             assertEquals(fileSha256(source), fileSha256(File(store.mediaDir, replacement)))

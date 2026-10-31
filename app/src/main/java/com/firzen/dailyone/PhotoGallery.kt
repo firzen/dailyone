@@ -1,6 +1,7 @@
 package com.firzen.dailyone
 
 import android.graphics.BitmapFactory
+import androidx.exifinterface.media.ExifInterface
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.border
@@ -45,6 +46,16 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+
+internal fun photoAspect(file: File): Float {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return 1f
+    val orientation = runCatching { ExifInterface(file).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1) }.getOrDefault(1)
+    val rotated = orientation in listOf(ExifInterface.ORIENTATION_TRANSPOSE, ExifInterface.ORIENTATION_ROTATE_90,
+        ExifInterface.ORIENTATION_TRANSVERSE, ExifInterface.ORIENTATION_ROTATE_270)
+    return if (rotated) bounds.outHeight.toFloat() / bounds.outWidth else bounds.outWidth.toFloat() / bounds.outHeight
+}
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable internal fun PhotoGallery(photos: List<String>, media: File, editing: Boolean,
@@ -93,9 +104,7 @@ import java.io.File
         val missing = photos.filterNot { it in ratios }
         if (missing.isNotEmpty()) {
             val measured = withContext(Dispatchers.IO) { missing.associateWith { name ->
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(File(media, name).path, options)
-                if (options.outWidth > 0 && options.outHeight > 0) options.outWidth.toFloat() / options.outHeight else 1f
+                photoAspect(File(media, name))
             } }
             ratios = ratios + measured
         }

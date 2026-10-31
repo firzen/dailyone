@@ -75,8 +75,8 @@ class GeoBackfill(private val context: Context, private val store: JournalStore,
             // Reproduce only the historical encoding to verify identity, never as an import format.
             val digest = store.photoDigest(uri)
             val matched = expected[digest] ?: return
-            val replacement = store.importPhoto(uri)
-            store.replacePhotos(matched.associateWith { replacement })
+            val replacements = matched.associateWith { store.importPhoto(uri) }
+            store.replacePhotos(replacements)
             expected.remove(digest); pending.removeAll(matched.toSet())
             state = state.copy(replaced = state.replaced + matched.size)
         }

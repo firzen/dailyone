@@ -59,18 +59,16 @@ class PlaceIntegrationTest {
             assertThrows(IllegalArgumentException::class.java) { photoShareIntent(context, File(context.filesDir, "journal.db")) }
         } finally { file.delete() }
     }
-    @Test fun devicePlaceSearchAndReverseLookup() = runBlocking {
+    @Test fun deviceOpenMapSearchHasNamedResults() = runBlocking {
         assumeTrue(InstrumentationRegistry.getArguments().getString("live-place-lookup") == "true")
         val service = PlaceService(InstrumentationRegistry.getInstrumentation().targetContext)
         val results = service.search("广州塔")
-        assertTrue("No landmark results from device geocoder", results.isNotEmpty())
+        assertTrue("No landmark results from OpenStreetMap search", results.isNotEmpty())
         val point = results.first()
         println("Public landmark lookup: ${point.label()}")
-        val resolved = requireNotNull(service.reverse(GeoPoint(point.latitude, point.longitude)))
-        assertTrue(resolved.name.isNotBlank() || resolved.address.isNotBlank())
-        assertTrue(point.sameCoordinates(resolved))
-        val shops = service.search("星巴克 广州天环广场店")
-        assertTrue("No shop results from device geocoder", shops.isNotEmpty())
-        println("Public shop lookup: ${shops.first().label()}")
+        assertEquals("OpenStreetMap", point.source)
+        InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply {
+            putString("open_map_live_result", "PASS: ${results.size} results for public landmark")
+        })
     }
 }

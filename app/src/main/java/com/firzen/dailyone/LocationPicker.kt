@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -22,6 +23,7 @@ import androidx.compose.ui.unit.sp
 @Composable internal fun LocationPicker(current: GeoPoint?, existing: GeoPoint?, results: List<GeoPoint>,
     locating: Boolean, searching: Boolean, error: String?, search: (String) -> Unit,
     retryCurrent: () -> Unit, select: (GeoPoint) -> Unit, close: () -> Unit) {
+    val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     fun submit(query: String) { keyboard?.hide(); search(query) }
     var query by remember { mutableStateOf("") }
@@ -56,6 +58,10 @@ import androidx.compose.ui.unit.sp
                 results.forEach { point -> PlaceChoice(point, selected, "搜索结果", { choose(point) }) }
             }
             if (error != null) Text(error, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+            Text("使用开放地图搜索，未收录的店铺可尝试完整地址。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = { runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://www.openstreetmap.org/copyright"))) } }) {
+                Text("© OpenStreetMap contributors · Photon", fontSize = 10.sp)
+            }
             if (selected != null) {
                 HorizontalDivider()
                 OutlinedTextField(name, { name = it; userSelected = true }, label = { Text("地点名称 / 店名") }, modifier = Modifier.fillMaxWidth(), singleLine = true)

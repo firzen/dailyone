@@ -187,7 +187,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             if (settingsOpen) {
                 ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
-                    CloudForm(vm.config, vm.busy, vm.settingsError, vm.photoTimePreference, vm::updatePhotoTimePreference, { settingsOpen = false; startScan() }, { settingsOpen = false; backfill() }, { vm.configure(it) { settingsOpen = false } })
+                    CloudForm(vm.config, vm.busy, vm.settingsError, vm.placeEndpoint, vm::updatePlaceEndpoint, vm.photoTimePreference, vm::updatePhotoTimePreference, { settingsOpen = false; startScan() }, { settingsOpen = false; backfill() }, { vm.configure(it) { settingsOpen = false } })
                 }
             }
         }
@@ -402,6 +402,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                     Text(location?.label() ?: "添加位置", fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(location?.address?.takeIf { it.isNotBlank() && it != location.name } ?: "搜索地点、店名，或使用当前位置",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (location?.source == "OpenStreetMap") Text("© OpenStreetMap contributors", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Icon(Icons.Outlined.ChevronRight, "选择或修改位置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -428,7 +429,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } })
 }
 
-@Composable private fun CloudForm(config: CloudConfig, busy: Boolean, error: String?, photoTimePreference: PhotoTimePreference,
+@Composable private fun CloudForm(config: CloudConfig, busy: Boolean, error: String?, placeEndpoint: String, updatePlaceEndpoint: (String) -> String?, photoTimePreference: PhotoTimePreference,
     updatePhotoTimePreference: (PhotoTimePreference) -> Unit, startScan: () -> Unit, backfill: () -> Unit, save: (CloudConfig) -> Unit) {
     var url by remember(config) { mutableStateOf(config.url) }
     var username by remember(config) { mutableStateOf(config.username) }
@@ -449,6 +450,15 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 }
             }
         }
+        HorizontalDivider()
+        Text("地点搜索", fontSize = 17.sp, fontWeight = FontWeight.Medium)
+        Text("OpenStreetMap 开放地图，无需 Key。可改为其他兼容 Photon 的服务器。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        var searchServer by remember(placeEndpoint) { mutableStateOf(placeEndpoint) }
+        var searchServerError by remember { mutableStateOf<String?>(null) }
+        OutlinedTextField(searchServer, { searchServer = it; searchServerError = null }, label = { Text("地点搜索服务器（HTTPS）") },
+            singleLine = true, isError = searchServerError != null, modifier = Modifier.fillMaxWidth())
+        if (searchServerError != null) Text(searchServerError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+        OutlinedButton(onClick = { searchServerError = updatePlaceEndpoint(searchServer) }, enabled = !busy) { Text("保存地点搜索设置") }
         HorizontalDivider()
         Text("云存储", fontSize = 17.sp, fontWeight = FontWeight.Medium)
         Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(10.dp)).padding(17.dp), verticalAlignment = Alignment.CenterVertically) {

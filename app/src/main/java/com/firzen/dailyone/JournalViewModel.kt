@@ -53,6 +53,14 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun stopGeoBackfill() { geoBackfill?.stop?.set(true) }
+    var placeEndpoint by mutableStateOf(preferences.getString("place_search_endpoint", OpenMapSearch.DEFAULT_ENDPOINT) ?: OpenMapSearch.DEFAULT_ENDPOINT); private set
+    fun updatePlaceEndpoint(value: String): String? = try {
+        val normalized = OpenMapSearch.normalizedEndpoint(value)
+        preferences.edit().putString("place_search_endpoint", normalized).apply()
+        placeEndpoint = normalized
+        events.trySend("地点搜索设置已保存")
+        null
+    } catch (e: Exception) { e.message ?: "地点搜索服务器地址无效" }
     private val places by lazy { PlaceService(getApplication()) }
     var locationPickerOpen by mutableStateOf(false); private set
     var locating by mutableStateOf(false); private set
@@ -99,10 +107,10 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         searchingPlaces = true; placeError = null; placeResults = emptyList()
         searchJob = viewModelScope.launch {
             try {
-                val results = places.search(query)
+                val results = places.search(query, currentPlace ?: draft?.location)
                 if (session == placeSession && revision == searchRevision) {
                     placeResults = results
-                    if (results.isEmpty()) placeError = "未找到地点，请加上城市或详细地址重试"
+                    if (results.isEmpty()) placeError = "开放地图未收录或未找到该地点，请尝试完整名称、城市或详细地址"
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession && revision == searchRevision) placeError = e.message ?: "地点搜索失败，请重试" }

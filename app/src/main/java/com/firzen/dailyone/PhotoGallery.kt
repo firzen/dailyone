@@ -94,6 +94,7 @@ import java.io.File
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable private fun PhotoViewer(photos: List<String>, media: File, initial: Int, close: () -> Unit) {
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val pager = rememberPagerState(initialPage = initial, pageCount = { photos.size })

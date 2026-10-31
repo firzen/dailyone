@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+val localConfig = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+val googleMapsKey = (providers.gradleProperty("GOOGLE_MAPS_API_KEY").orNull
+    ?: System.getenv("DAILYONE_GOOGLE_MAPS_KEY") ?: localConfig.getProperty("google.maps.api.key", "")).trim()
+require(googleMapsKey.isEmpty() || Regex("AIza[0-9A-Za-z_-]{35}").matches(googleMapsKey)) { "Invalid Google Maps API key configuration" }
 android {
     namespace = "com.firzen.dailyone"
     compileSdk = 35
@@ -10,11 +18,13 @@ android {
         applicationId = "com.firzen.dailyone"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.7.1"
+        versionCode = 12
+        versionName = "0.8.0"
+        manifestPlaceholders["googleMapsApiKey"] = googleMapsKey
+        buildConfigField("boolean", "GOOGLE_MAPS_CONFIGURED", googleMapsKey.isNotBlank().toString())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
@@ -28,6 +38,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    implementation("com.google.android.gms:play-services-maps:20.1.0")
     implementation("com.amap.api:3dmap-location-search:11.3.100_loc11.3.101_sea9.8.1")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("com.google.mediapipe:tasks-vision:0.10.21")

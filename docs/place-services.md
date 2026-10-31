@@ -1,6 +1,6 @@
-# 地点服务（0.6.0）
+# 地点服务（0.8.0）
 
-中国大陆、香港和澳门接入高德 Web服务 API：关键词 POI 搜索、GPS 坐标转换、逆地理编码。其他地区的路由目标是 Google，本次尚未接入 Google API，界面会明确提示，且不会悄悄回退到开放地图。
+中国大陆、香港和澳门接入高德 Web服务 API：关键词 POI 搜索、GPS 坐标转换、逆地理编码。其他地区使用 Google 原生地图、Places API (New) 地点搜索与附近地点、Geocoding API 地址解析。
 
 默认根据当前位置或日记位置的 ISO 国家/地区代码选择：CN/HK/MO 为高德，其他代码（包括 TW）为 Google。未知地区不靠矩形经纬度范围猜测；可手动选择大陆、香港、澳门或其他地区，支持跨地区搜索。城市参数可覆盖当前位置的城市偏置，港澳使用固定城市和 citylimit=true。
 
@@ -44,3 +44,21 @@
 顶部城市输入改为点击展开，地区和城市共用一行；地点名称与距离同排，地址单行显示。移除重复的已选名称摘要，将修改店名入口放在列表标题旁。附近地点通过 `/v3/place/around` 显式查询高德全部 POI 大类（含住宅、学校、交通、地名地址、公共设施、通行设施等），避免省略 types 时接口默认只返回部分类型。1 公里范围内按距离查询，每页 25 条，滑动到底部自动加载下一页，失败时提供重试。附近列表过滤与固定“日记现有位置”相同的地点，优先按 POI ID 去重，旧位置按同名、同地址或同坐标系下 25 米内匹配，避免误删同名异地地点。位置变化时清空旧页并取消旧请求，后续页面也受位置版本与会话保护。批量补全店铺继续使用独立商户类型和原有 75 米规则。
 
 分类参照：[高德 POI 分类编码](https://lbs.amap.com/api/webservice/download)。
+
+## 0.8.0 Google 地图
+
+中国大陆、香港、澳门使用高德；其他明确的 ISO 地区代码（包括 TW）使用 Google。地图拖动事件带服务来源，未知国家的临时 GPS 中心不会瞬间切回高德。Google 使用 WGS84，高德地图使用官方转换的 GCJ02；禁止向 Google 请求发送 GCJ02。跨地区搜索的 Google 结果使用 Google 地图展示，点选后切换地图、刷新附近地点，确认才写入日记。高德批量店铺补全的范围保持不变。
+
+Google Maps SDK for Android 固定 20.1.0，需设备安装可用的 Google Play 服务。原生 MapView 随页面释放，地图手势与程序移动镜头区分，不启用 SDK 自定位。Google 搜索不复用高德缓存，不将 Google 响应写入长期搜索缓存；用户确认的位置保存坐标、名称、地址、来源、Place ID 和返回的第三方署名，选点列表展示署名及安全的 HTTPS 来源链接。
+
+Google 附近搜索不指定类型、半径 1 公里、DISTANCE 排序，每次最多 20 条，API 不提供分页，界面提示通过移动地图或关键词搜索更多地点；不会伪造分页。高德仍按每页 25 条自动续页。两种地图保留日记原位置、同地点去重和自定义店名。
+
+### 配置
+
+Google Cloud 项目需关联结算，并启用 Maps SDK for Android、Places API (New)、Geocoding API。
+
+- Android 地图 Key：限制到 `com.firzen.dailyone` 及安装包签名 SHA1，并只允许 Maps SDK for Android。写入已忽略的 `local.properties` 中 `google.maps.api.key=...`，或设置本地环境变量 `DAILYONE_GOOGLE_MAPS_KEY`，也可使用 Gradle 属性 `GOOGLE_MAPS_API_KEY`。构建注入标准 Android Manifest 元数据；源码和仓库不含实际 Key。地图 Key 变更后需要重建安装包。
+- 地点服务 Key：API 限制为 Places API (New) 和 Geocoding API，在 App 设置中填写；通过现有独立 Keystore 加密存储，不写入日记或同步。当前为个人客户端直接调用 REST API，不使用服务器 IP 或网页来源限制。正式扩展服务端时可迁移到受控代理。
+- Key 缺失或无权限分别显示 Google 配置错误；不回显服务器错误正文、密钥或请求 URL。
+
+官方参考：[Android 地图配置](https://developers.google.com/maps/documentation/android-sdk/get-api-key)、[附近搜索](https://developers.google.com/maps/documentation/places/web-service/nearby-search)、[文本搜索](https://developers.google.com/maps/documentation/places/web-service/text-search)、[逆地理编码](https://developers.google.com/maps/documentation/geocoding/requests-reverse-geocoding)。

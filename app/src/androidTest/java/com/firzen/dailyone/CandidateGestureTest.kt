@@ -99,6 +99,7 @@ class CandidateGestureTest {
                     val next = photos.value.toMutableList(); next.add(to, next.removeAt(from)); photos.value = next
                 })
             } }
+            compose.waitForIdle()
             compose.waitUntil(5_000) { compose.onAllNodesWithContentDescription("图片 2，查看大图").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithContentDescription("图片 1，查看大图").performTouchInput { click() }
             compose.onNodeWithContentDescription("关闭大图").assertExists().performClick()

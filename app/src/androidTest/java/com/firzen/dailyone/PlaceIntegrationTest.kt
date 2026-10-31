@@ -84,4 +84,26 @@ class PlaceIntegrationTest {
             putString("amap_live_result", "PASS nearby places: ${first.size} + ${second.size} results")
         })
     }
+    @Test fun overseasMapCoordinatesRemainGpsWithoutAmapConversion() = runBlocking {
+        val point = GeoPoint(35.68, 139.76, countryCode = "JP")
+        val service = PlaceService(InstrumentationRegistry.getInstrumentation().targetContext)
+        assertEquals(point, service.mapCoordinate(point))
+        assertTrue(service.nearby(point, page = 2).isEmpty())
+    }
+    @Test fun deviceGoogleSearchNearbyAndReverseWorkWhenExplicitlyRequested() = runBlocking {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("live-google-place-lookup") == "true")
+        val point = GeoPoint(35.6812, 139.7671, countryCode = "JP")
+        val service = PlaceService(InstrumentationRegistry.getInstrumentation().targetContext)
+        val found = service.search("東京駅", point, PlaceRegion.OTHER, "")
+        assertTrue("No Google search results", found.isNotEmpty())
+        assertTrue(found.all { it.source == "Google" && it.coordinateSystem == CoordinateSystem.WGS84 })
+        val nearby = service.nearby(point)
+        assertTrue("No Google nearby places", nearby.isNotEmpty())
+        assertTrue(nearby.size <= 20)
+        val named = requireNotNull(service.reverse(point))
+        assertTrue(named.sameCoordinates(point)); assertEquals("JP", named.countryCode)
+        InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply {
+            putString("google_live_result", "PASS search=${found.size}, nearby=${nearby.size}, reverse=JP")
+        })
+    }
 }

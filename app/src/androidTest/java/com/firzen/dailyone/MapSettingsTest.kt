@@ -15,6 +15,10 @@ class MapSettingsTest {
             val key = "1234567890abcdef1234567890abcdef"
             MapSettings(context, namespace, alias).saveAmapKey(key)
             MapSettings(context, namespace, alias).saveAndroidKey("a".repeat(32))
+            val google = "AIza" + "g".repeat(35)
+            MapSettings(context, namespace, alias).saveGoogleKey(google)
+            assertEquals(google, MapSettings(context, namespace, alias).loadGoogleKey())
+            assertFalse(prefs.getString("config", "")!!.contains(google))
             assertEquals(key, MapSettings(context, namespace, alias).loadAmapKey())
             assertEquals("a".repeat(32), MapSettings(context, namespace, alias).loadAndroidKey())
             assertFalse(prefs.getString("config", "")!!.contains(key))
@@ -42,6 +46,16 @@ class MapSettingsTest {
             }
             InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply { putString("amap_key_configured", "true") })
         } finally { web.delete(); androidFile.delete() }
+    }
+    @Test fun configureLiveGoogleKeyOnlyWhenExplicitlyRequested() {
+        org.junit.Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("configure-google-key") == "true")
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = java.io.File(context.cacheDir, "google-bootstrap-key")
+        try {
+            val provided = file.readText().trim()
+            MapSettings(context).saveGoogleKey(provided)
+            assertTrue("Encrypted Google credential did not persist", MapSettings(context).loadGoogleKey() == provided)
+        } finally { file.delete() }
     }
 
 }

@@ -18,5 +18,11 @@ class MapSettings(context: Context, preferenceName: String = "place_credentials"
         encrypted.save(encrypted.load().copy(username = key))
     }
 
+    fun loadGoogleKey(): String = encrypted.load().url
+    fun saveGoogleKey(value: String) {
+        val key = value.trim()
+        require(key.isEmpty() || validGoogleKey(key)) { "请填写有效的 Google 地点服务 Key" }
+        encrypted.save(encrypted.load().copy(url = key))
+    }
 }
 internal fun validAmapKey(value: String): Boolean = Regex("[0-9a-fA-F]{32}").matches(value)

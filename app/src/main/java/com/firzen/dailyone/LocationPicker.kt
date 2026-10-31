@@ -34,8 +34,12 @@ import androidx.compose.ui.window.DialogProperties
     androidKey: String = "", privacyAgreed: Boolean = false, agreePrivacy: () -> Unit = {},
     mapCenter: GeoPoint? = null, mapPick: GeoPoint? = null, nearby: List<GeoPoint> = emptyList(), resolvingMap: Boolean = false,
     focusMap: (GeoPoint) -> Unit = {}, moveMap: (GeoPoint) -> Unit = {}, distanceCenter: GeoPoint? = null,
-    moreNearby: Boolean = false, loadingMoreNearby: Boolean = false, loadMoreNearby: () -> Unit = {}) {
+    moreNearby: Boolean = false, loadingMoreNearby: Boolean = false, loadMoreNearby: () -> Unit = {}, googleConfigured: Boolean = BuildConfig.GOOGLE_MAPS_CONFIGURED) {
     val effectiveRegion = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(distanceCenter ?: existing ?: current) else region
+    val resultProvider = results.firstOrNull()?.let { when (it.source) { "Google" -> PlaceProvider.GOOGLE; "AMap" -> PlaceProvider.AMAP; else -> null } }
+    val mapProvider = resultProvider ?: PlaceRegion.fromPoint(distanceCenter)?.provider
+        ?: distanceCenter?.takeIf { it.source == "Google" }?.let { PlaceProvider.GOOGLE }
+        ?: effectiveRegion?.provider ?: PlaceProvider.AMAP
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
@@ -66,7 +70,7 @@ import androidx.compose.ui.window.DialogProperties
                 Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = close) { Icon(Icons.Outlined.Close, "取消选择位置") }
                     Text("选择位置", Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.Medium)
-                    TextButton(enabled = selected != null && name.isNotBlank() && !resolvingMap && effectiveRegion?.provider != PlaceProvider.GOOGLE, onClick = {
+                    TextButton(enabled = selected != null && name.isNotBlank() && !resolvingMap, onClick = {
                         selected?.let { point -> select(point.copy(name = name.trim(), nameOrigin = if (name.trim() != point.name) PlaceNameOrigin.CUSTOM else PlaceNameOrigin.POI)) }
                     }) { Text("使用此位置") }
                 }
@@ -93,7 +97,14 @@ import androidx.compose.ui.window.DialogProperties
                 }
                 Box(Modifier.fillMaxWidth().weight(.9f).heightIn(min = 130.dp).background(MaterialTheme.colorScheme.surfaceContainer)) {
                     when {
-                        effectiveRegion?.provider == PlaceProvider.GOOGLE -> Text("Google 地图将后续接入，请切换到大陆、香港或澳门", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
+                        mapProvider == PlaceProvider.GOOGLE -> {
+                            if (!googleConfigured) Text("Google 地图 Key 尚未配置，请配置后更新安装包", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
+                            else {
+                                GoogleMapPanel((results.firstOrNull() ?: mapCenter)?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 },
+                                    { point -> selected = null; name = ""; query = ""; userSelected = true; moveMap(point) }, Modifier.fillMaxSize())
+                                Icon(Icons.Outlined.LocationOn, "地图中心选点", Modifier.align(Alignment.Center).size(38.dp).offset(y = (-18).dp), tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
                         androidKey.isBlank() -> Text("在设置中填写高德 Android平台 Key 后显示地图", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
                         !privacyAgreed -> Column(Modifier.align(Alignment.Center).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("地图由高德提供，用于浏览地图和拖动选点。启用前请阅读高德隐私政策。", fontSize = 13.sp)
@@ -101,7 +112,7 @@ import androidx.compose.ui.window.DialogProperties
                             Button(onClick = agreePrivacy) { Text("同意并启用地图") }
                         }
                         else -> {
-                            AmapMapPanel(androidKey, mapCenter, { point -> selected = null; name = ""; query = ""; userSelected = true; moveMap(point) }, Modifier.fillMaxSize())
+                            AmapMapPanel(androidKey, (results.firstOrNull() ?: mapCenter)?.takeIf { it.coordinateSystem == CoordinateSystem.GCJ02 }, { point -> selected = null; name = ""; query = ""; userSelected = true; moveMap(point) }, Modifier.fillMaxSize())
                             Icon(Icons.Outlined.LocationOn, "地图中心选点", Modifier.align(Alignment.Center).size(38.dp).offset(y = (-18).dp), tint = MaterialTheme.colorScheme.primary)
                         }
                     }
@@ -129,6 +140,9 @@ import androidx.compose.ui.window.DialogProperties
                     items(ordered) { point ->
                         val distance = distanceCenter?.takeIf { it.coordinateSystem == point.coordinateSystem }?.let { distanceLabel(distanceMeters(point, it)) }.orEmpty()
                         PlaceChoice(point, selected, distance) { choose(point) }
+                    }
+                    if (mapProvider == PlaceProvider.GOOGLE && results.isEmpty() && nearby.isNotEmpty()) item {
+                        Text("可拖动地图或搜索更多地点", Modifier.padding(6.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (results.isEmpty() && moreNearby) item(key = "nearby-pagination") {
                         Box(Modifier.fillMaxWidth().height(40.dp), contentAlignment = Alignment.Center) {
@@ -158,6 +172,13 @@ import androidx.compose.ui.window.DialogProperties
                 if (prefix.isNotBlank()) Text(prefix, Modifier.padding(start = 8.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
             }
             if (point.address.isNotBlank() && point.address != point.name) Text(point.address, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val context = LocalContext.current
+            point.attributions.forEach { attribution ->
+                val uri = runCatching { Uri.parse(attribution.uri) }.getOrNull()?.takeIf { it.scheme == "https" && !it.host.isNullOrBlank() }
+                Text(attribution.name, Modifier.then(if (uri == null) Modifier else Modifier.clickable {
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+                }), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }

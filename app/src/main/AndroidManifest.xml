@@ -10,6 +10,7 @@
     <application android:label="DailyOne" android:icon="@drawable/ic_launcher"
         android:theme="@style/Theme.DailyOne" android:allowBackup="false"
         android:supportsRtl="true" android:usesCleartextTraffic="false">
+        <meta-data android:name="com.google.android.geo.API_KEY" android:value="${googleMapsApiKey}" />
         <provider android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.photos" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/photo_paths" />

@@ -61,6 +61,10 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         events.trySend("高德 Key 已保存")
         null
     } catch (e: Exception) { e.message ?: "高德 Key 保存失败" }
+    var googleKey by mutableStateOf(""); private set
+    fun updateGoogleKey(value: String): String? = try {
+        mapSettings.saveGoogleKey(value); googleKey = value.trim(); events.trySend("Google 地点服务 Key 已保存"); null
+    } catch (e: Exception) { e.message ?: "Google Key 保存失败" }
     var amapAndroidKey by mutableStateOf(""); private set
     var mapPrivacyAgreed by mutableStateOf(preferences.getBoolean("amap_map_privacy_v1", false)); private set
     fun agreeMapPrivacy() { preferences.edit().putBoolean("amap_map_privacy_v1", true).apply(); mapPrivacyAgreed = true }
@@ -127,11 +131,12 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         mapJob = viewModelScope.launch {
             try {
                 val named = places.reverse(point) ?: error("未找到该位置的地址")
-                check(PlaceRegion.fromPoint(named)?.provider == PlaceProvider.AMAP) { "该地区需要 Google 地图，后续接入" }
+                val mapped = places.mapCoordinate(named)
                 if (session != placeSession || revision != mapRevision) return@launch
-                mapPick = named; mapAnchor = named
-                val nearby = places.nearby(named)
-                if (session == placeSession && revision == mapRevision) { mapPick = named; mapAnchor = named; firstNearby(nearby); if (!cityWasEdited) searchCity = named.city }
+                mapPick = named; mapAnchor = mapped
+                if (mapped.coordinateSystem != point.coordinateSystem) mapCenter = mapped
+                val nearby = places.nearby(mapped)
+                if (session == placeSession && revision == mapRevision) { mapPick = named; mapAnchor = mapped; firstNearby(nearby); if (!cityWasEdited) searchCity = named.city }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession && revision == mapRevision) placeError = e.message ?: "选点地址解析失败" }
             finally { if (session == placeSession && revision == mapRevision) resolvingMap = false }
@@ -323,7 +328,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() { scanner?.stop?.set(true); geoBackfill?.stop?.set(true); shopRefresh?.stop?.set(true); super.onCleared() }
     init {
         viewModelScope.launch {
-            try { store.load(); config = withContext(Dispatchers.IO) { settings.load() }; amapKey = withContext(Dispatchers.IO) { mapSettings.loadAmapKey() }; amapAndroidKey = withContext(Dispatchers.IO) { mapSettings.loadAndroidKey() } }
+            try { store.load(); config = withContext(Dispatchers.IO) { settings.load() }; amapKey = withContext(Dispatchers.IO) { mapSettings.loadAmapKey() }; amapAndroidKey = withContext(Dispatchers.IO) { mapSettings.loadAndroidKey() }; googleKey = withContext(Dispatchers.IO) { mapSettings.loadGoogleKey() } }
             catch (e: Exception) { events.send("读取数据失败：${e.message}") }
             finally { loading = false }
         }

@@ -185,7 +185,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             if (settingsOpen) {
                 ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
-                    CloudForm(vm.config, vm.busy || vm.shopProgress.running, vm.settingsError, vm.amapKey, vm::updateAmapKey, vm.amapAndroidKey, vm::updateAndroidKey, { settingsOpen = false; vm.startShopRefresh() }, vm.photoTimePreference, vm::updatePhotoTimePreference, { settingsOpen = false; startScan() }, { vm.configure(it) { settingsOpen = false } })
+                    CloudForm(vm.config, vm.busy || vm.shopProgress.running, vm.settingsError, vm.amapKey, vm::updateAmapKey, vm.amapAndroidKey, vm::updateAndroidKey, { settingsOpen = false; vm.startShopRefresh() }, vm.photoTimePreference, vm::updatePhotoTimePreference, { settingsOpen = false; startScan() }, { vm.configure(it) { settingsOpen = false } }, vm.googleKey, vm::updateGoogleKey)
                 }
             }
         }
@@ -405,7 +405,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                     Text(location?.address?.takeIf { it.isNotBlank() && it != location.name } ?: "搜索地点、店名，或使用当前位置",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (location?.source == "OpenStreetMap") Text("© OpenStreetMap contributors", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (location?.source == "AMap") Text("高德地图", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (location?.source in listOf("AMap", "Google")) Text(if (location?.source == "Google") "Google Maps" else "高德地图", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Icon(Icons.Outlined.ChevronRight, "选择或修改位置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -433,7 +433,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 }
 
 @Composable private fun CloudForm(config: CloudConfig, busy: Boolean, error: String?, amapKey: String, updateAmapKey: (String) -> String?, androidMapKey: String, updateAndroidKey: (String) -> String?, refreshShops: () -> Unit, photoTimePreference: PhotoTimePreference,
-    updatePhotoTimePreference: (PhotoTimePreference) -> Unit, startScan: () -> Unit, save: (CloudConfig) -> Unit) {
+    updatePhotoTimePreference: (PhotoTimePreference) -> Unit, startScan: () -> Unit, save: (CloudConfig) -> Unit, googleKey: String, updateGoogleKey: (String) -> String?) {
     var url by remember(config) { mutableStateOf(config.url) }
     var username by remember(config) { mutableStateOf(config.username) }
     var password by remember(config) { mutableStateOf(config.password) }
@@ -454,7 +454,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         }
         HorizontalDivider()
         Text("地点服务", fontSize = 17.sp, fontWeight = FontWeight.Medium)
-        Text("中国大陆、香港、澳门使用高德；其他地区预留 Google，后续接入。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("中国大陆、香港、澳门使用高德；其他地区使用 Google 地图。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         var mapKey by remember(amapKey) { mutableStateOf(amapKey) }
         var mapError by remember { mutableStateOf<String?>(null) }
         OutlinedTextField(mapKey, { mapKey = it; mapError = null }, label = { Text("高德 Web服务 Key") },
@@ -467,6 +467,12 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         OutlinedButton(onClick = { mapError = updateAndroidKey(androidKey) }, enabled = !busy) { Text("保存地图 Key") }
         OutlinedButton(onClick = refreshShops, enabled = !busy && amapKey.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("重新更新已有日记店铺信息") }
         Text("Key 仅加密保存在本机。Web服务 Key 用于搜索，Android平台 Key 用于地图。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        var googleInput by remember(googleKey) { mutableStateOf(googleKey) }
+        OutlinedTextField(googleInput, { googleInput = it; mapError = null }, label = { Text("Google 地点服务 Key") },
+            singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        OutlinedButton(onClick = { mapError = updateGoogleKey(googleInput) }, enabled = !busy) { Text("保存 Google Key") }
+        Text(if (BuildConfig.GOOGLE_MAPS_CONFIGURED) "Google 原生地图已配置" else "Google 地图需配置 Android 地图 Key 后更新安装包", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Google 地点服务需启用 Places API (New) 和 Geocoding API。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         HorizontalDivider()
         Text("云存储", fontSize = 17.sp, fontWeight = FontWeight.Medium)
         Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(10.dp)).padding(17.dp), verticalAlignment = Alignment.CenterVertically) {

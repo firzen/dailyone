@@ -83,4 +83,14 @@ class LocationPickerUiTest {
         compose.onNodeWithText("日记现有位置").assertExists()
         compose.onNodeWithText("另一个地点").assertExists()
     }
+    @Test fun googleLocationCanBeConfirmedWithoutConvertingCoordinates() {
+        val overseas = GeoPoint(35.68, 139.76, "东京公园", source = "Google", countryCode = "JP", poiId = "google-fixture")
+        var saved: GeoPoint? = null
+        compose.setContent { MaterialTheme { LocationPicker(null, overseas, emptyList(), false, false, null,
+            {}, {}, { saved = it }, {}, distanceCenter = overseas, googleConfigured = false) } }
+        compose.onNodeWithText("Google 地图 Key 尚未配置，请配置后更新安装包").assertExists()
+        compose.onNodeWithText("使用此位置").performClick()
+        compose.runOnIdle { assertEquals(overseas.copy(nameOrigin = PlaceNameOrigin.POI), saved) }
+    }
+
 }

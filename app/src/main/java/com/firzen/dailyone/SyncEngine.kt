@@ -21,9 +21,8 @@ class SyncEngine(private val store: JournalStore) {
                 if (!remote.deleted) for (name in remote.photos) {
                     val file = File(store.mediaDir, name)
                     if (!file.exists()) {
-                        val bytes = dav.getPhoto(name)
                         val temp = File(store.mediaDir, "$name.part")
-                        temp.writeBytes(bytes)
+                        dav.downloadPhoto(name, temp)
                         check(temp.renameTo(file)) { "图片保存失败" }
                     }
                 }
@@ -39,7 +38,7 @@ class SyncEngine(private val store: JournalStore) {
                 if (!entry.deleted) for (name in entry.photos) {
                     val photo = File(store.mediaDir, name)
                     check(photo.exists()) { "日记图片缺失：$name" }
-                    dav.putPhoto(name, photo.readBytes())
+                    dav.putPhoto(name, photo)
                 }
                 val tag = dav.putEntry(entry)
                 // Never GET after a successful write to establish a baseline: another device

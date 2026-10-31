@@ -19,7 +19,7 @@
 
 ## 本地存储
 
-SQLite schema 2 以增量 ALTER TABLE 给 entries 添加 candidate、scan_day；scanned_media 保存来源 URI、修改时间和大小组成的检查点，以及候选/图片关联。检查点和候选记录在同一事务内提交。所有扫描、编辑及确认写入经过同一互斥锁；筛选或编辑中的候选暂时冻结追加。
+SQLite schema 3 以增量 ALTER TABLE 给 entries 添加 candidate、scan_day；scanned_media 保存来源 URI、修改时间和大小组成的检查点，以及候选/图片关联。检查点和候选记录在同一事务内提交。所有扫描、编辑及确认写入经过同一互斥锁；筛选或编辑中的候选暂时冻结追加。
 
 ## 模型与来源
 
@@ -35,3 +35,9 @@ SQLite schema 2 以增量 ALTER TABLE 给 entries 添加 candidate、scan_day；
 本地构建：`./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest`。
 
 ScanIntegrationTest 使用随机命名的独立数据库、独立图片目录和测试样例，不扫描或修改真实相册与日记。覆盖旧库迁移、原子检查点、停止续扫、已处理记录保护、撤销覆盖保护，以及实际模型正负样例识别。
+
+## 原图与位置
+
+新导入直接复制源文件，不缩放、不转码，保留可访问的 EXIF。系统需要照片访问和媒体位置权限才能提供完整 GPS。日记优先显示手动位置，否则按照片顺序取首个有效 GPS。云同步保存照片坐标并流式传输原文件，无 12MB 图片限制。
+
+设置中的“恢复旧照片原图并补全定位”先检查已知来源，再扫描获准访问的相册。通过源文件 SHA-256 或重现历史 JPEG 编码后的 SHA-256 精确匹配，不按日期或相似外观推测。匹配后复制原图，以新文件名原子更新引用及坐标，避免缓存与同步沿用旧文件；候选仍为候选，正式日记标记待同步。旧文件保留，未匹配照片不变。保存时解析替换别名，防止旧编辑内容重新引用压缩图。停止在当前图片边界生效，已提交结果保留；不会改日记时间。

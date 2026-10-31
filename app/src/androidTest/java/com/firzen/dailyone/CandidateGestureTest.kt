@@ -8,10 +8,13 @@ import java.util.UUID
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -68,7 +71,8 @@ class CandidateGestureTest {
         }
         var removed: String? = null
         try {
-            compose.setContent { MaterialTheme { PhotoGallery(photos, dir, true, { removed = it }, { _, _ -> }) } }
+            // Match the real editor: system insets and an unbounded, scrolling photo column.
+            compose.setContent { MaterialTheme { Box(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState())) { PhotoGallery(photos, dir, true, { removed = it }, { _, _ -> }) } } }
             compose.waitUntil(5_000) { compose.onAllNodesWithContentDescription("删除图片 1").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithContentDescription("删除图片 1").performTouchInput { click() }
             compose.runOnIdle { assertEquals("one.jpg", removed) }

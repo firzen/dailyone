@@ -3,6 +3,8 @@ package com.firzen.dailyone
 import android.os.Bundle
 import android.os.Build
 import android.Manifest
+import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
@@ -82,7 +84,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     val listState = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
     var settingsOpen by remember { mutableStateOf(false) }
-    val draft = vm.draft
+    val draft = vm.draft?.let { current -> current.copy(photoLocations = all.firstOrNull { it.id == current.id }?.photoLocations.orEmpty() + current.photoLocations) }
     val context = LocalContext.current
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var batchDialog by remember { mutableStateOf<Boolean?>(null) }
@@ -92,15 +94,32 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         if (entry.scanDay == "unknown") { vm.open(entry); return }
         vm.review(entry.id, true)
     }
+    val backfillPermissions = (if (Build.VERSION.SDK_INT >= 34) arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+        else if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.READ_MEDIA_IMAGES) else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)) +
+        (if (Build.VERSION.SDK_INT >= 29) arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION) else emptyArray())
+    val backfillLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { vm.startGeoBackfill() }
+    val backfill = {
+        if (backfillPermissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }) vm.startGeoBackfill()
+        else backfillLauncher.launch(backfillPermissions)
+    }
+    val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        if (grants.values.any { it }) vm.recordCurrentLocation()
+    }
+    val recordLocation = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) vm.recordCurrentLocation()
+        else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+    }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-        if (grants.values.any { it }) vm.startScan() else vm.photoPermissionDenied()
+        if (grants.any { (permission, granted) -> granted && permission != Manifest.permission.ACCESS_MEDIA_LOCATION }) vm.startScan() else vm.photoPermissionDenied()
     }
     val startScan = {
         val permissions = if (Build.VERSION.SDK_INT >= 34) arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
             else if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
             else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        if (ContextCompat.checkSelfPermission(context, permissions.first()) == PackageManager.PERMISSION_GRANTED) vm.startScan()
-        else permissionLauncher.launch(permissions)
+        val wanted = permissions + if (Build.VERSION.SDK_INT >= 29) arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION) else emptyArray()
+        if (ContextCompat.checkSelfPermission(context, permissions.first()) == PackageManager.PERMISSION_GRANTED && (Build.VERSION.SDK_INT < 29 || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED)) vm.startScan()
+        else permissionLauncher.launch(wanted)
     }
     val view = LocalView.current
     val dark = isSystemInDarkTheme()
@@ -111,12 +130,17 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         if (snackbar.showSnackbar(notice.message, actionLabel = notice.undoId?.let { "撤销" }) == SnackbarResult.ActionPerformed) notice.undoId?.let(vm::undo)
     } }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = if (draft == null) { if (dark) Color(0xFF252B30) else Color(0xFF333C41) } else MaterialTheme.colorScheme.background) { insets ->
-        Box(Modifier.fillMaxSize().padding(insets)) {
+        Column(Modifier.fillMaxSize().padding(insets)) {
+            if (vm.geoProgress.running) Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("原图恢复 ${vm.geoProgress.checked}/${vm.geoProgress.total} · 已替换 ${vm.geoProgress.replaced} 张", Modifier.weight(1f), fontSize = 12.sp)
+                TextButton(onClick = vm::stopGeoBackfill) { Text("停止") }
+            }
+            Box(Modifier.weight(1f)) {
             if (draft == null) JournalList(listState, entries, vm.loading, vm.busy, vm.config.url.isNotBlank(),
                 vm.store.mediaDir, { vm.open(it) }, { vm.open() }, { settingsOpen = true }, vm::sync, vm.scanProgress, startScan, vm::stopScan,
                 { entry, retain -> if (retain) keep(entry) else vm.review(entry.id, false) }, selectedIds, toggleSelection,
                 { selectedIds = emptySet() }, { batchDialog = false }, { batchDialog = true })
-            else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete, vm::removePhoto, { keep(it) })
+            else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete, vm::removePhoto, { keep(it) }, recordLocation, vm.locating)
             batchDialog?.let { merge ->
                 val chosen = entries.filter { it.id in selectedIds }
                 val preview = if (merge && chosen.size > 1) journalBatch(chosen, true).first().second else null
@@ -155,10 +179,11 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             if (settingsOpen) {
                 ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
-                    CloudForm(vm.config, vm.busy, vm.settingsError, vm.photoTimePreference, vm::updatePhotoTimePreference, { settingsOpen = false; startScan() }, { vm.configure(it) { settingsOpen = false } })
+                    CloudForm(vm.config, vm.busy, vm.settingsError, vm.photoTimePreference, vm::updatePhotoTimePreference, { settingsOpen = false; startScan() }, { settingsOpen = false; backfill() }, { vm.configure(it) { settingsOpen = false } })
                 }
             }
         }
+    }
     }
 }
 
@@ -301,9 +326,16 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 
 @Composable internal fun Editor(entry: Entry, media: File, saved: Boolean, importing: Boolean,
     change: (Entry) -> Unit, back: () -> Unit, addPhotos: (List<android.net.Uri>) -> Unit, delete: () -> Unit,
-    removePhoto: ((String) -> Unit)? = null, keepCandidate: (Entry) -> Unit = {}) {
+    removePhoto: ((String) -> Unit)? = null, keepCandidate: (Entry) -> Unit = {}, recordLocation: () -> Unit = {}, locating: Boolean = false) {
     BackHandler(onBack = back)
+    val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents(), addPhotos)
+    val mediaLocation = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { picker.launch("image/*") }
+    val selectPhotos = {
+        if (Build.VERSION.SDK_INT >= 29 && ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_MEDIA_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            mediaLocation.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
+        else picker.launch("image/*")
+    }
     var editing by remember(entry.id) { mutableStateOf(entry.isEmpty || entry.scanDay == "unknown") }
     var confirmDate by remember(entry.id) { mutableStateOf(entry.scanDay == "unknown") }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -347,10 +379,19 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 move = { from, to -> val reordered = entry.photos.toMutableList(); val photo = reordered.removeAt(from); reordered.add(to, photo); change(entry.copy(photos = reordered)) }, scrollState = detailScroll, dragViewport = detailViewport)
             Spacer(Modifier.height(24.dp))
         }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            val location = entry.location
+            if (location != null) TextButton(onClick = {
+                val uri = Uri.parse("geo:${location.latitude},${location.longitude}?q=${location.latitude},${location.longitude}")
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+            }, modifier = Modifier.weight(1f)) { Icon(Icons.Outlined.LocationOn, null, Modifier.size(16.dp)); Text(location.label(), fontSize = 12.sp) }
+            else Text("未记录位置", Modifier.weight(1f), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = recordLocation, enabled = !locating) { Text(if (locating) "定位中…" else "记录当前位置", fontSize = 12.sp) }
+        }
         if (editing) {
             HorizontalDivider(thickness = .5.dp)
             Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { picker.launch("image/*") }, enabled = !importing) { Icon(Icons.Outlined.AddPhotoAlternate, "添加图片，可多选", tint = MaterialTheme.colorScheme.primary) }
+                IconButton(onClick = selectPhotos, enabled = !importing) { Icon(Icons.Outlined.AddPhotoAlternate, "添加图片，可多选", tint = MaterialTheme.colorScheme.primary) }
                 Text("${entry.photos.size} 张", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                 Spacer(Modifier.weight(1f))
                 Text(if (importing) "正在添加图片…" else if (saved) "已保存到本机" else "正在保存…", Modifier.padding(end = 12.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -381,13 +422,14 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 }
 
 @Composable private fun CloudForm(config: CloudConfig, busy: Boolean, error: String?, photoTimePreference: PhotoTimePreference,
-    updatePhotoTimePreference: (PhotoTimePreference) -> Unit, startScan: () -> Unit, save: (CloudConfig) -> Unit) {
+    updatePhotoTimePreference: (PhotoTimePreference) -> Unit, startScan: () -> Unit, backfill: () -> Unit, save: (CloudConfig) -> Unit) {
     var url by remember(config) { mutableStateOf(config.url) }
     var username by remember(config) { mutableStateOf(config.username) }
     var password by remember(config) { mutableStateOf(config.password) }
     Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("设置", fontSize = 22.sp, fontWeight = FontWeight.Medium)
         OutlinedButton(onClick = startScan, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("扫描相册 · 生成人物日记") }
+        OutlinedButton(onClick = backfill, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("恢复旧照片原图并补全定位") }
         var photoTimeMenu by remember { mutableStateOf(false) }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("添加图片时", modifier = Modifier.weight(1f), fontSize = 15.sp)

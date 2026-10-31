@@ -8,6 +8,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import java.io.File
+import okhttp3.RequestBody.Companion.asRequestBody
 import java.net.URI
 import java.net.URLDecoder
 import java.util.concurrent.TimeUnit
@@ -99,11 +101,24 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
             if (!r.isSuccessful && r.code != 412) fail(r.code)
         }
     }
-    fun getPhoto(name: String): ByteArray {
+    fun putPhoto(name: String, file: File) {
         require(validPhoto(name))
-        return request("GET", "photos/$name").use { r ->
-            if (!r.isSuccessful) fail(r.code)
-            bounded(r, 12 * 1024 * 1024)
+        val mime = when (name.substringAfterLast('.')) {
+            "jpg", "jpeg" -> "image/jpeg"; "png" -> "image/png"; "webp" -> "image/webp"
+            "heic", "heif" -> "image/heic"; "gif" -> "image/gif"; "avif" -> "image/avif"
+            else -> "application/octet-stream"
+        }
+        val req = Request.Builder().url(url("photos/$name")).header("Authorization", auth)
+            .header("If-None-Match", "*").put(file.asRequestBody(mime.toMediaType())).build()
+        client.newCall(req).execute().use { if (!it.isSuccessful && it.code != 412) fail(it.code) }
+    }
+    fun downloadPhoto(name: String, destination: File) {
+        require(validPhoto(name))
+        request("GET", "photos/$name").use { response ->
+            if (!response.isSuccessful) fail(response.code)
+            val body = response.body ?: error("图片内容为空")
+            body.byteStream().use { input -> destination.outputStream().use { input.copyTo(it) } }
+            check(body.contentLength() < 0 || destination.length() == body.contentLength()) { "原图下载不完整" }
         }
     }
     private fun bounded(response: okhttp3.Response, limit: Int): ByteArray {

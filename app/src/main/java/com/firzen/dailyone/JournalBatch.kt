@@ -12,6 +12,8 @@ fun journalBatch(entries: List<Entry>, merge: Boolean, now: Long = System.curren
         (if (index == 0) listOf(entry.body) else listOf(entry.title, entry.body)).filter { it.isNotBlank() }.joinToString("\n")
     }.filter { it.isNotBlank() }.joinToString("\n\n")
     val merged = first.copy(body = body, photos = sorted.flatMap { it.photos }.distinct(), candidate = candidate,
-        scanDay = if (candidate) first.scanDay else null, updatedAt = now, dirty = !candidate)
+        scanDay = if (candidate) first.scanDay else null, updatedAt = now, dirty = !candidate,
+        photoLocations = sorted.flatMap { it.photoLocations.entries }.associate { it.key to it.value },
+        recordedLocation = sorted.firstNotNullOfOrNull { it.recordedLocation })
     return listOf(first to merged) + sorted.drop(1).map { it to it.copy(deleted = true, dirty = !it.candidate, updatedAt = now) }
 }

@@ -37,11 +37,41 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     val messages = events.flow
     var scanProgress by mutableStateOf(ScanProgress()); private set
     private var scanner: PhotoScanner? = null
+    private var geoBackfill: GeoBackfill? = null
+    var geoProgress by mutableStateOf(GeoBackfillProgress()); private set
+    fun startGeoBackfill() {
+        if (geoProgress.running || scanProgress.running || busy || loading) return
+        val worker = GeoBackfill(getApplication(), store)
+        geoBackfill = worker; geoProgress = GeoBackfillProgress(running = true)
+        viewModelScope.launch {
+            try {
+                val result = worker.run { geoProgress = it.copy(running = true) }
+                draft = draft?.let(store::resolvePhotos)
+                events.send("原图恢复${if (worker.stop.get()) "已停止" else "完成"}：替换 ${result.replaced} 张，定位补全 ${result.filled} 次，未匹配 ${result.remaining} 张")
+            } catch (e: Exception) { events.send(e.message ?: "原图恢复中断，已有结果保留") }
+            finally { geoBackfill = null; geoProgress = geoProgress.copy(running = false) }
+        }
+    }
+    fun stopGeoBackfill() { geoBackfill?.stop?.set(true) }
+    var locating by mutableStateOf(false); private set
+    fun recordCurrentLocation() {
+        val original = draft ?: return
+        if (locating) return
+        locating = true
+        viewModelScope.launch {
+            try {
+                val location = currentLocation(getApplication())
+                if (location == null) events.send("暂未获取到当前位置，请在室外或网络良好时重试")
+                else if (draft?.id == original.id) draft?.let { change(it.copy(recordedLocation = location)) }
+            } catch (e: Exception) { events.send(e.message ?: "获取定位失败") }
+            finally { locating = false }
+        }
+    }
     private val editingId = AtomicReference<String?>(null)
     private val undoActions = mutableMapOf<String, List<Pair<Entry, Entry>>>()
     fun photoPermissionDenied() { events.trySend("请允许照片访问权限后再开始扫描") }
     fun startScan() {
-        if (scanProgress.running || loading || busy) return
+        if (scanProgress.running || geoProgress.running || loading || busy) return
         val scan = PhotoScanner(getApplication(), store)
         scanner = scan; scanProgress = ScanProgress(running = true)
         viewModelScope.launch {
@@ -105,7 +135,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
-    override fun onCleared() { scanner?.stop?.set(true); super.onCleared() }
+    override fun onCleared() { scanner?.stop?.set(true); geoBackfill?.stop?.set(true); super.onCleared() }
     init {
         viewModelScope.launch {
             try { store.load(); config = withContext(Dispatchers.IO) { settings.load() } }
@@ -153,7 +183,11 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                         val name = store.importPhoto(uri)
                         if (firstTime == null) firstTime = timestamp
                         val latest = draft
-                        if (latest?.id == original.id) change(latest.copy(photos = latest.photos + name))
+                        if (latest?.id == original.id) {
+                            val location = withContext(Dispatchers.IO) { store.knownPhotoLocation(name) }
+                            change(latest.copy(photos = latest.photos + name,
+                                photoLocations = location?.let { latest.photoLocations + (name to it) } ?: latest.photoLocations))
+                        }
                     } catch (e: Exception) { events.send("有一张图片添加失败：${e.message}") }
                 }
                 val latest = draft
@@ -180,7 +214,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun configure(value: CloudConfig, onSaved: () -> Unit) {
         if (busy) return
-        if (scanProgress.running) { settingsError = "请先停止扫描"; return }
+        if (scanProgress.running || geoProgress.running) { settingsError = "请先停止扫描或原图恢复"; return }
         busy = true
         settingsError = null
         viewModelScope.launch {
@@ -196,7 +230,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun sync() {
-        if (scanProgress.running) { events.trySend("请先停止扫描，再同步云存储"); return }
+        if (scanProgress.running || geoProgress.running) { events.trySend("请先停止扫描或定位补全，再同步云存储"); return }
         if (busy || loading || pending > 0 || saveFailed) return
         if (config.url.isBlank()) { events.trySend("请先配置 WebDAV 云存储"); return }
         busy = true

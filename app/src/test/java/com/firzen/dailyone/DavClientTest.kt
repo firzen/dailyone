@@ -84,4 +84,22 @@ class DavClientTest {
         server.enqueue(MockResponse().setHeader("ETag", "\"v1\"").setBody("x".repeat(2 * 1024 * 1024 + 1)))
         assertThrows(IllegalArgumentException::class.java) { dav.getEntry(id) }
     }
+    @Test fun originalFilesLargerThanTwelveMegabytesStreamWithoutAlteration() {
+        val source = java.io.File.createTempFile("dailyone-original", ".png")
+        val destination = java.io.File.createTempFile("dailyone-download", ".png")
+        try {
+            val data = ByteArray(13 * 1024 * 1024 + 7) { (it % 251).toByte() }
+            source.writeBytes(data)
+            server.enqueue(MockResponse().setResponseCode(201))
+            dav.putPhoto("$id.png", source)
+            val request = server.takeRequest()
+            assertEquals("image/png", request.getHeader("Content-Type"))
+            assertEquals("*", request.getHeader("If-None-Match"))
+            assertArrayEquals(data, request.body.readByteArray())
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(data)))
+            dav.downloadPhoto("$id.png", destination)
+            assertArrayEquals(data, destination.readBytes())
+        } finally { source.delete(); destination.delete() }
+    }
+
 }

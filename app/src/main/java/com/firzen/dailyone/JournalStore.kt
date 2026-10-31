@@ -17,7 +17,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-class JournalStore(context: Context, databaseName: String = "journal.db", photoDirectoryName: String = "photos") : SQLiteOpenHelper(context, databaseName, null, 2) {
+class JournalStore(context: Context, databaseName: String = "journal.db", photoDirectoryName: String = "photos") : SQLiteOpenHelper(context, databaseName, null, 3) {
     private val appContext = context.applicationContext
     val mediaDir = File(context.filesDir, photoDirectoryName).apply { mkdirs() }
     val entries = MutableStateFlow<List<Entry>>(emptyList())
@@ -25,6 +25,11 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE entries (id TEXT PRIMARY KEY, document TEXT NOT NULL, dirty INTEGER NOT NULL, etag TEXT, candidate INTEGER NOT NULL DEFAULT 0, scan_day TEXT)")
         createScanTable(db)
+        createPhotoSources(db)
+    }
+    private fun createPhotoSources(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS photo_replacements (old_name TEXT PRIMARY KEY, new_name TEXT NOT NULL)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS photo_sources (photo_name TEXT PRIMARY KEY, source_uri TEXT NOT NULL, latitude REAL, longitude REAL)")
     }
     private fun createScanTable(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS scanned_media (source_key TEXT PRIMARY KEY, entry_id TEXT, photo_name TEXT)")
@@ -35,6 +40,7 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
             db.execSQL("ALTER TABLE entries ADD COLUMN scan_day TEXT")
             createScanTable(db)
         }
+        if (oldVersion < 3) createPhotoSources(db)
     }
     suspend fun load() = lock.withLock { withContext(Dispatchers.IO) { refresh() } }
     private fun read(): List<Entry> = readableDatabase.rawQuery("SELECT document, dirty, etag, candidate, scan_day FROM entries", null).use { c ->
@@ -66,7 +72,8 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
             val candidate = if (photo == null) null else {
                 val current = entries.value.firstOrNull { it.candidate && !it.deleted && it.scanDay == day && it.id != editingId() }
                     ?: Entry(createdAt = timestamp ?: 0L, candidate = true, scanDay = day, dirty = false)
-                current.copy(photos = current.photos + photo, updatedAt = System.currentTimeMillis())
+                current.copy(photos = current.photos + photo, updatedAt = System.currentTimeMillis(),
+                    photoLocations = knownPhotoLocation(photo)?.let { current.photoLocations + (photo to it) } ?: current.photoLocations)
             }
             writableDatabase.beginTransaction()
             try {
@@ -106,7 +113,11 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         val replaced = records.associateBy { it.id }
         entries.value = (entries.value.filterNot { it.id in replaced } + records).sortedByDescending { it.createdAt }
     }
-    suspend fun save(entry: Entry) = lock.withLock { withContext(Dispatchers.IO) { write(entry) } }
+    suspend fun save(entry: Entry) = lock.withLock { withContext(Dispatchers.IO) {
+        val resolved = resolvePhotos(entry)
+        val metadata = get(entry.id)?.photoLocations.orEmpty() + resolved.photoLocations
+        write(resolved.copy(photoLocations = metadata.filterKeys { it in resolved.photos }))
+    } }
     suspend fun resetSyncBaseline() = lock.withLock { withContext(Dispatchers.IO) {
         writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL")
         refresh()
@@ -131,6 +142,82 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         }.getOrNull()
     }
     suspend fun importPhoto(uri: Uri): String = withContext(Dispatchers.IO) {
+        val location = readPhotoLocation(appContext, uri)
+        val mime = appContext.contentResolver.getType(uri)
+        val extension = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime ?: "")?.lowercase()
+            ?: uri.lastPathSegment?.substringAfterLast('.', "")?.lowercase()?.takeIf { Regex("[a-z0-9]{1,10}").matches(it) } ?: "img"
+        val name = "${UUID.randomUUID()}.$extension"
+        try {
+            appContext.contentResolver.openInputStream(originalPhotoUri(appContext, uri)).use { input ->
+                requireNotNull(input) { "无法读取原图" }
+                File(mediaDir, name).outputStream().use { output -> input.copyTo(output) }
+            }
+            require(File(mediaDir, name).length() > 0) { "原图内容为空" }
+            val source = canonicalPhotoUri(appContext, uri)
+            lock.withLock {
+                val row = ContentValues().apply {
+                    put("photo_name", name); put("source_uri", source.toString())
+                    location?.let { put("latitude", it.latitude); put("longitude", it.longitude) }
+                }
+                writableDatabase.insertOrThrow("photo_sources", null, row)
+            }
+        } catch (e: Exception) { File(mediaDir, name).delete(); throw e }
+        name
+    }
+    fun knownPhotoLocation(name: String): GeoPoint? = readableDatabase.rawQuery(
+        "SELECT latitude,longitude FROM photo_sources WHERE photo_name=?", arrayOf(name)
+    ).use { c -> if (c.moveToFirst() && !c.isNull(0) && !c.isNull(1)) GeoPoint(c.getDouble(0), c.getDouble(1)) else null }
+    suspend fun originalPhotoSources(names: Set<String>): Map<String, String> = lock.withLock { withContext(Dispatchers.IO) {
+        val sources = mutableMapOf<String, String>()
+        readableDatabase.rawQuery("SELECT photo_name,source_uri FROM photo_sources", null).use { c ->
+            while (c.moveToNext()) if (c.getString(0) in names) sources[c.getString(0)] = c.getString(1)
+        }
+        readableDatabase.rawQuery("SELECT photo_name,source_key FROM scanned_media WHERE photo_name IS NOT NULL", null).use { c ->
+            while (c.moveToNext()) if (c.getString(0) in names && c.getString(0) !in sources)
+                sources[c.getString(0)] = c.getString(1).substringBeforeLast(':').substringBeforeLast(':')
+        }
+        sources
+    } }
+    fun resolvePhotos(entry: Entry): Entry {
+        val aliases = mutableMapOf<String, String>()
+        readableDatabase.rawQuery("SELECT old_name,new_name FROM photo_replacements", null).use { c ->
+            while (c.moveToNext()) aliases[c.getString(0)] = c.getString(1)
+        }
+        fun resolve(name: String): String {
+            var result = name; val seen = mutableSetOf<String>()
+            while (seen.add(result)) result = aliases[result] ?: break
+            return result
+        }
+        val photos = entry.photos.map(::resolve).distinct()
+        val locations = entry.photoLocations.mapKeys { resolve(it.key) }.toMutableMap()
+        photos.forEach { knownPhotoLocation(it)?.let { point -> locations.putIfAbsent(it, point) } }
+        return entry.copy(photos = photos, photoLocations = locations.filterKeys { it in photos })
+    }
+    suspend fun replacePhotos(replacements: Map<String, String>): Int = lock.withLock { withContext(Dispatchers.IO) {
+        val affected = entries.value.filter { !it.deleted && it.photos.any(replacements::containsKey) }
+        writableDatabase.beginTransaction()
+        try {
+            replacements.forEach { (old, new) ->
+                require(validPhoto(new) && File(mediaDir, new).length() > 0)
+                writableDatabase.insertOrThrow("photo_replacements", null, ContentValues().apply { put("old_name", old); put("new_name", new) })
+            }
+            affected.forEach { persist(resolvePhotos(it).copy(updatedAt = System.currentTimeMillis(), dirty = !it.candidate)) }
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+        refresh()
+        affected.size
+    } }
+    suspend fun fillLocations(found: Map<String, GeoPoint>): Int = lock.withLock { withContext(Dispatchers.IO) {
+        val changes = entries.value.filterNot { it.deleted }.mapNotNull { entry ->
+            val additions = found.filter { (name, _) -> name in entry.photos && name !in entry.photoLocations }
+            if (additions.isEmpty()) null else entry.copy(photoLocations = entry.photoLocations + additions,
+                updatedAt = System.currentTimeMillis(), dirty = !entry.candidate)
+        }
+        if (changes.isNotEmpty()) transactionWrite(changes)
+        changes.size
+    } }
+    suspend fun photoDigest(uri: Uri): String = withContext(Dispatchers.IO) { sha256(encodePhoto(uri)) }
+    internal fun encodePhoto(uri: Uri): ByteArray {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         appContext.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, bounds) }
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "无法读取这张图片" }
@@ -158,10 +245,10 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         }
         val bitmap = if (matrix.isIdentity) decoded else Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
         if (bitmap !== decoded) decoded.recycle()
-        val name = "${UUID.randomUUID()}.jpg"
-        try { File(mediaDir, name).outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, 88, it)) } }
-        catch (e: Exception) { File(mediaDir, name).delete(); throw e }
-        finally { bitmap.recycle() }
-        name
+        return try {
+            val output = java.io.ByteArrayOutputStream()
+            check(bitmap.compress(Bitmap.CompressFormat.JPEG, 88, output))
+            output.toByteArray()
+        } finally { bitmap.recycle() }
     }
 }

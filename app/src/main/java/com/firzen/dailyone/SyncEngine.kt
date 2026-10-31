@@ -35,7 +35,7 @@ class SyncEngine(private val store: JournalStore) {
                 }
                 store.write(remote)
             }
-            for (entry in store.entries.value.filter { it.dirty }) {
+            for (entry in store.entries.value.filter { it.dirty && it.syncable }) {
                 if (!entry.deleted) for (name in entry.photos) {
                     val photo = File(store.mediaDir, name)
                     check(photo.exists()) { "日记图片缺失：$name" }

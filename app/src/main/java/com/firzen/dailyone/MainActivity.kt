@@ -1,6 +1,11 @@
 package com.firzen.dailyone
 
 import android.os.Bundle
+import android.os.Build
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.LocalContext
 import android.app.Activity
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.platform.LocalView
@@ -71,17 +76,41 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     val snackbar = remember { SnackbarHostState() }
     var settingsOpen by remember { mutableStateOf(false) }
     val draft = vm.draft
+    val context = LocalContext.current
+    var candidateSelection by remember { mutableStateOf<Entry?>(null) }
+    fun keep(entry: Entry) {
+        if (entry.scanDay == "unknown") { vm.open(entry); return }
+        if (entry.photos.size > 20) vm.prepareSelection(entry) { candidateSelection = it } else vm.review(entry.id, true)
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        if (grants.values.any { it }) vm.startScan() else vm.photoPermissionDenied()
+    }
+    val startScan = {
+        val permissions = if (Build.VERSION.SDK_INT >= 34) arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+            else if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
+            else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        if (ContextCompat.checkSelfPermission(context, permissions.first()) == PackageManager.PERMISSION_GRANTED) vm.startScan()
+        else permissionLauncher.launch(permissions)
+    }
     val view = LocalView.current
     val dark = isSystemInDarkTheme()
     SideEffect {
         WindowCompat.getInsetsController((view.context as Activity).window, view).isAppearanceLightStatusBars = draft != null && !dark
     }
-    LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }
+    LaunchedEffect(vm) { vm.messages.collect { notice ->
+        if (snackbar.showSnackbar(notice.message, actionLabel = notice.undoId?.let { "撤销" }) == SnackbarResult.ActionPerformed) notice.undoId?.let(vm::undo)
+    } }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = if (draft == null) { if (dark) Color(0xFF252B30) else Color(0xFF333C41) } else MaterialTheme.colorScheme.background) { insets ->
         Box(Modifier.fillMaxSize().padding(insets)) {
             if (draft == null) JournalList(entries, vm.loading, vm.busy, vm.config.url.isNotBlank(),
-                vm.store.mediaDir, { vm.open(it) }, { vm.open() }, { settingsOpen = true }, vm::sync)
-            else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete)
+                vm.store.mediaDir, { vm.open(it) }, { vm.open() }, { settingsOpen = true }, vm::sync, vm.scanProgress, startScan, vm::stopScan,
+                { entry, retain -> if (retain) keep(entry) else vm.review(entry.id, false) })
+            else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete, vm::removePhoto, { keep(it) })
+            candidateSelection?.let { entry ->
+                CandidatePhotoSelection(entry, vm.store.mediaDir, { candidateSelection = null; vm.closeSelection() }) { photos ->
+                    vm.review(entry.id, true, photos); candidateSelection = null
+                }
+            }
             vm.photoTimePrompt?.let { prompt ->
                 var rememberChoice by remember(prompt.entryId, prompt.timestamp) { mutableStateOf(false) }
                 AlertDialog(
@@ -104,7 +133,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             if (settingsOpen) {
                 ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
-                    CloudForm(vm.config, vm.busy, vm.settingsError, vm.photoTimePreference, vm::updatePhotoTimePreference, { vm.configure(it) { settingsOpen = false } })
+                    CloudForm(vm.config, vm.busy, vm.settingsError, vm.photoTimePreference, vm::updatePhotoTimePreference, { settingsOpen = false; startScan() }, { vm.configure(it) { settingsOpen = false } })
                 }
             }
         }
@@ -112,7 +141,8 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 }
 
 @Composable private fun JournalList(entries: List<Entry>, loading: Boolean, busy: Boolean, configured: Boolean,
-    media: File, open: (Entry) -> Unit, create: () -> Unit, settings: () -> Unit, sync: () -> Unit) {
+    media: File, open: (Entry) -> Unit, create: () -> Unit, settings: () -> Unit, sync: () -> Unit,
+    scan: ScanProgress, startScan: () -> Unit, stopScan: () -> Unit, review: (Entry, Boolean) -> Unit) {
     val dark = isSystemInDarkTheme()
     val chrome = if (dark) Color(0xFF252B30) else Color(0xFF333C41)
     Column(Modifier.fillMaxSize().background(chrome)) {
@@ -136,6 +166,13 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 Spacer(Modifier.weight(1f))
                 Text("${entries.size} 篇", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(if (scan.running) "${if (scan.stopping) "停止中" else "扫描中"} ${scan.processed}/${scan.total} · 人物 ${scan.matched}" else "人物照片生成日记", fontSize = 13.sp)
+                    Text("待确认 ${entries.count { it.candidate }} 篇 · 仅扫描已授权照片", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton(onClick = if (scan.running) stopScan else startScan, enabled = !loading && !busy && !scan.stopping) { Text(if (scan.running) "停止扫描" else "扫描照片") }
+            }
             Box(Modifier.fillMaxSize()) {
                 if (loading) CircularProgressIndicator(Modifier.align(Alignment.Center))
                 else if (entries.isEmpty()) Column(Modifier.align(Alignment.Center).padding(30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -144,12 +181,14 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                     Text("留下一点文字，以后就能想起今天。", Modifier.padding(top = 9.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 9.dp, end = 9.dp, bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    entries.groupBy { date(it.createdAt, "yyyy-MM") }.forEach { (month, group) ->
+                    entries.groupBy { if (it.scanDay == "unknown") "unknown" else date(it.createdAt, "yyyy-MM") }.forEach { (month, group) ->
                         item(key = "month-$month") {
-                            Text(date(group.first().createdAt, "MMMM yyyy"), Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 22.dp), fontSize = 25.sp)
+                            Text(if (month == "unknown") "日期待确认" else date(group.first().createdAt, "MMMM yyyy"), Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 22.dp), fontSize = 25.sp)
                         }
                         items(group, key = { it.id }) { entry ->
-                            JournalCard(entry, media, !busy) { open(entry) }
+                            if (entry.candidate) CandidateCard(entry, !busy, { review(entry, it) }) {
+                                JournalCard(entry, media, !busy) { open(entry) }
+                            } else JournalCard(entry, media, !busy) { open(entry) }
                         }
                     }
                 }
@@ -171,8 +210,8 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.width(61.dp).height(96.dp).clip(RoundedCornerShape(40.dp)).background(capsule),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Text(date(entry.createdAt, "EEE"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(date(entry.createdAt, "dd"), fontSize = 27.sp, lineHeight = 34.sp, modifier = Modifier.padding(top = 3.dp))
+            Text(if (entry.scanDay == "unknown") "待确认" else date(entry.createdAt, "EEE"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (entry.scanDay == "unknown") "—" else date(entry.createdAt, "dd"), fontSize = 27.sp, lineHeight = 34.sp, modifier = Modifier.padding(top = 3.dp))
         }
         Spacer(Modifier.width(9.dp))
         Column(Modifier.weight(1f).heightIn(min = 96.dp), verticalArrangement = Arrangement.SpaceBetween) {
@@ -186,7 +225,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             Row(Modifier.padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("日记", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
-                Text(" · " + date(entry.createdAt, "HH:mm"), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                Text(" · " + if (entry.scanDay == "unknown") "日期待确认" else date(entry.createdAt, "HH:mm"), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             }
         }
     }
@@ -223,18 +262,24 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 }
 
 @Composable internal fun Editor(entry: Entry, media: File, saved: Boolean, importing: Boolean,
-    change: (Entry) -> Unit, back: () -> Unit, addPhotos: (List<android.net.Uri>) -> Unit, delete: () -> Unit) {
+    change: (Entry) -> Unit, back: () -> Unit, addPhotos: (List<android.net.Uri>) -> Unit, delete: () -> Unit,
+    removePhoto: ((String) -> Unit)? = null, keepCandidate: (Entry) -> Unit = {}) {
     BackHandler(onBack = back)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents(), addPhotos)
-    var editing by remember(entry.id) { mutableStateOf(entry.isEmpty) }
+    var editing by remember(entry.id) { mutableStateOf(entry.isEmpty || entry.scanDay == "unknown") }
+    var confirmDate by remember(entry.id) { mutableStateOf(entry.scanDay == "unknown") }
     var confirmDelete by remember { mutableStateOf(false) }
     var entryMenu by remember { mutableStateOf(false) }
     val cursor = SolidColor(MaterialTheme.colorScheme.primary)
     Column(Modifier.fillMaxSize().imePadding()) {
         Row(Modifier.fillMaxWidth().height(72.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = back, enabled = saved && !importing) { Icon(Icons.Outlined.ArrowBack, "保存并返回") }
-            Text(date(entry.createdAt, "EEE，yyyy年M月d日"), Modifier.weight(1f).padding(start = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 21.sp)
-            if (editing) TextButton(onClick = { editing = false }, enabled = saved && !importing) { Text("完成") }
+            Text(if (entry.scanDay == "unknown") "日期待确认" else date(entry.createdAt, "EEE，yyyy年M月d日"), Modifier.weight(1f).padding(start = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 21.sp)
+            if (editing) TextButton(onClick = {
+                if (entry.candidate) {
+                    if (entry.scanDay == "unknown") { confirmDate = true } else { keepCandidate(entry); editing = false }
+                } else editing = false
+            }, enabled = saved && !importing) { Text(if (entry.candidate) "保存" else "完成") }
             else IconButton(onClick = { editing = true }) { Icon(Icons.Outlined.Edit, "编辑日记") }
             Box {
                 IconButton(onClick = { entryMenu = true }, enabled = saved && !importing) { Icon(Icons.Outlined.MoreVert, "日记选项") }
@@ -257,8 +302,9 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 if (entry.title.isNotBlank()) Text(entry.title, Modifier.padding(bottom = 19.dp), fontSize = 34.sp, lineHeight = 42.sp, fontWeight = FontWeight.Bold)
                 if (entry.body.isNotBlank()) Text(entry.body, Modifier.padding(bottom = 20.dp), fontSize = 17.sp, lineHeight = 30.sp)
             }
-            PhotoGallery(entry.photos, media, editing,
-                remove = { name -> change(entry.copy(photos = entry.photos - name)) },
+            if (entry.photos.size > 20) TextButton(onClick = { keepCandidate(entry) }) { Text("共 ${entry.photos.size} 张 · 选择最多 20 张保留") }
+            PhotoGallery(entry.photos.take(20), media, editing,
+                remove = { name -> if (removePhoto != null) removePhoto(name) else change(entry.copy(photos = entry.photos - name)) },
                 move = { from, to -> val reordered = entry.photos.toMutableList(); val photo = reordered.removeAt(from); reordered.add(to, photo); change(entry.copy(photos = reordered)) })
             Spacer(Modifier.height(24.dp))
         }
@@ -271,9 +317,23 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 Text(if (importing) "正在添加图片…" else if (saved) "已保存到本机" else "正在保存…", Modifier.padding(end = 12.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
-            Text(date(entry.createdAt, "HH:mm") + " · ", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text((if (entry.scanDay == "unknown") "日期待确认" else date(entry.createdAt, "HH:mm")) + " · ", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("日记", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
         }
+    }
+    if (confirmDate) {
+        var chosenDate by remember { mutableStateOf(java.time.LocalDate.now().toString()) }
+        var dateError by remember { mutableStateOf(false) }
+        AlertDialog(onDismissRequest = { confirmDate = false }, title = { Text("确认日记日期") },
+            text = { Column { Text("这些图片没有有效拍摄日期，请填写日记日期。")
+                OutlinedTextField(chosenDate, { chosenDate = it }, label = { Text("日期，如 2026-10-31") }, isError = dateError) } },
+            confirmButton = { TextButton(onClick = {
+                val day = runCatching { java.time.LocalDate.parse(chosenDate) }.getOrNull()
+                if (day == null) dateError = true else {
+                    change(entry.copy(createdAt = day.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(), scanDay = day.toString()))
+                    confirmDate = false
+                }
+            }) { Text("确定") } }, dismissButton = { TextButton(onClick = { confirmDate = false }) { Text("取消") } })
     }
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("删除这篇日记？") },
         text = { Text("同步后，其他设备也会删除这篇日记。") },
@@ -282,12 +342,13 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 }
 
 @Composable private fun CloudForm(config: CloudConfig, busy: Boolean, error: String?, photoTimePreference: PhotoTimePreference,
-    updatePhotoTimePreference: (PhotoTimePreference) -> Unit, save: (CloudConfig) -> Unit) {
+    updatePhotoTimePreference: (PhotoTimePreference) -> Unit, startScan: () -> Unit, save: (CloudConfig) -> Unit) {
     var url by remember(config) { mutableStateOf(config.url) }
     var username by remember(config) { mutableStateOf(config.username) }
     var password by remember(config) { mutableStateOf(config.password) }
     Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("设置", fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        OutlinedButton(onClick = startScan, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("扫描相册 · 生成人物日记") }
         var photoTimeMenu by remember { mutableStateOf(false) }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("添加图片时", modifier = Modifier.weight(1f), fontSize = 15.sp)

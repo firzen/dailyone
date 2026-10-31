@@ -3,6 +3,7 @@ package com.firzen.dailyone
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -13,6 +14,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable internal fun PhotoGallery(photos: List<String>, media: File, editing: Boolean,
     remove: (String) -> Unit, move: (Int, Int) -> Unit) {
     if (photos.isEmpty()) return
@@ -50,11 +53,12 @@ import java.io.File
     @Composable fun tile(index: Int, modifier: Modifier) {
         var menu by remember(photos[index]) { mutableStateOf(false) }
         Box(modifier.clip(RoundedCornerShape(5.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
-            AsyncImage(File(media, photos[index]), "图片 ${index + 1}，查看大图", Modifier.fillMaxSize().clickable { selected = index }, contentScale = ContentScale.Crop)
+            AsyncImage(File(media, photos[index]), "图片 ${index + 1}，查看大图", Modifier.fillMaxSize().combinedClickable(onClick = { selected = index }, onLongClick = { menu = true }), contentScale = ContentScale.Crop)
             Box(Modifier.align(Alignment.TopEnd).padding(3.dp)) {
-                IconButton(onClick = { menu = true }, modifier = Modifier.size(48.dp)) {
+                IconButton(onClick = { if (editing) remove(photos[index]) else menu = true }, modifier = Modifier.size(48.dp)) {
                     Box(Modifier.size(34.dp).background(Color.Black.copy(alpha = .45f), CircleShape), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.MoreVert, "图片 ${index + 1} 的选项", tint = Color.White, modifier = Modifier.size(20.dp))
+                        Icon(if (editing) Icons.Outlined.DeleteOutline else Icons.Outlined.MoreVert,
+                            if (editing) "删除图片 ${index + 1}" else "图片 ${index + 1} 的选项", tint = Color.White, modifier = Modifier.size(20.dp))
                     }
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {

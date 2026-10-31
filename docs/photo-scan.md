@@ -1,0 +1,36 @@
+# 人物照片扫描与候选日记
+
+版本：0.3.0。扫描由用户手动启动，读取系统允许访问的照片；仅授予部分照片权限时只扫描授权范围。人物识别在本机执行，不上传照片进行识别。
+
+## 操作
+
+- 列表和设置中均可开始扫描。扫描进度旁可随时停止，已生成的候选保留。再次扫描跳过已经处理且未变化的照片。
+- 每识别一张人物照片就复制到应用私有目录，并按拍摄日期加入候选，立即显示在正式日记列表中。
+- 红色蒙版表示候选：左滑删除候选，右滑保留为正式日记，点击可查看、编辑。编辑自动保存仍保持候选，点击“保存”才转正。
+- 图片编辑模式下有直接删除按钮，提供撤销；长按图片可排序或打开更多选项；不删除系统相册原图。
+- 候选保存在本机，转正后才参与 WebDAV 同步。删除候选也不上传删除标记。
+- 同日只追加到仍待确认、未打开编辑的候选。已转正、已删除或正在编辑的记录不被扫描器更改；后续同日照片另建候选。
+- 候选可收集当天全部匹配照片。正式日记沿用 20 张上限，超出时须显式筛选；编辑页先预览前 20 张，筛选窗口可浏览全部照片。
+- 优先 EXIF 拍摄时间，其次系统相册 DATE_TAKEN；无法确定时放入“日期待确认”，转正前需填写日期。
+- 撤销仅在对应记录尚未被后续编辑或同步改变时执行，避免覆盖新内容。
+
+扫描无需一直连续完成。停止会在当前照片处理边界结束；应用进程中断后，下次手动扫描会使用持久化检查点继续。图片解码或导入失败会计数并留待下次重试。首次扫描应保持应用可运行，后台进程可能被系统回收。
+
+## 本地存储
+
+SQLite schema 2 以增量 ALTER TABLE 给 entries 添加 candidate、scan_day；scanned_media 保存来源 URI、修改时间和大小组成的检查点，以及候选/图片关联。检查点和候选记录在同一事务内提交。所有扫描、编辑及确认写入经过同一互斥锁；筛选或编辑中的候选暂时冻结追加。
+
+## 模型与来源
+
+- MediaPipe Tasks Vision：0.10.21，CPU IMAGE 模式。
+- EfficientDet-Lite0 int8，Google 官方发布版本 1；仅检测 person 类别，置信度阈值 0.5，不识别人物身份。
+- 模型地址：https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite
+- 官方说明：https://ai.google.dev/edge/mediapipe/solutions/vision/object_detector/android
+- 模型 SHA-256：0720bf247bd76e6594ea28fa9c6f7c5242be774818997dbbeffc4da460c723bb
+- 真机识别测试图片：https://storage.googleapis.com/mediapipe-assets/pose.jpg
+
+## 验证
+
+本地构建：`./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest`。
+
+ScanIntegrationTest 使用随机命名的独立数据库、独立图片目录和测试样例，不扫描或修改真实相册与日记。覆盖旧库迁移、原子检查点、停止续扫、已处理记录保护、撤销覆盖保护，以及实际模型正负样例识别。

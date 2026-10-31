@@ -17,31 +17,79 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-class JournalStore(context: Context) : SQLiteOpenHelper(context, "journal.db", null, 1) {
+class JournalStore(context: Context, databaseName: String = "journal.db", photoDirectoryName: String = "photos") : SQLiteOpenHelper(context, databaseName, null, 2) {
     private val appContext = context.applicationContext
-    val mediaDir = File(context.filesDir, "photos").apply { mkdirs() }
+    val mediaDir = File(context.filesDir, photoDirectoryName).apply { mkdirs() }
     val entries = MutableStateFlow<List<Entry>>(emptyList())
     val lock = Mutex()
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE entries (id TEXT PRIMARY KEY, document TEXT NOT NULL, dirty INTEGER NOT NULL, etag TEXT)")
+        db.execSQL("CREATE TABLE entries (id TEXT PRIMARY KEY, document TEXT NOT NULL, dirty INTEGER NOT NULL, etag TEXT, candidate INTEGER NOT NULL DEFAULT 0, scan_day TEXT)")
+        createScanTable(db)
     }
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    private fun createScanTable(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS scanned_media (source_key TEXT PRIMARY KEY, entry_id TEXT, photo_name TEXT)")
+    }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE entries ADD COLUMN candidate INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE entries ADD COLUMN scan_day TEXT")
+            createScanTable(db)
+        }
+    }
     suspend fun load() = lock.withLock { withContext(Dispatchers.IO) { refresh() } }
-    private fun read(): List<Entry> = readableDatabase.rawQuery("SELECT document, dirty, etag FROM entries", null).use { c ->
-        buildList { while (c.moveToNext()) add(Entry.parse(c.getString(0), c.getString(2)).copy(dirty = c.getInt(1) == 1)) }
+    private fun read(): List<Entry> = readableDatabase.rawQuery("SELECT document, dirty, etag, candidate, scan_day FROM entries", null).use { c ->
+        buildList { while (c.moveToNext()) add(Entry.parse(c.getString(0), c.getString(2), c.getInt(3) == 1, c.getString(4)).copy(dirty = c.getInt(1) == 1)) }
     }
     private fun refresh() { entries.value = read().sortedByDescending { it.createdAt } }
     fun get(id: String): Entry? = readableDatabase.rawQuery(
-        "SELECT document, dirty, etag FROM entries WHERE id = ?", arrayOf(id)
-    ).use { c -> if (c.moveToFirst()) Entry.parse(c.getString(0), c.getString(2)).copy(dirty = c.getInt(1) == 1) else null }
-    fun write(entry: Entry) {
+        "SELECT document, dirty, etag, candidate, scan_day FROM entries WHERE id = ?", arrayOf(id)
+    ).use { c -> if (c.moveToFirst()) Entry.parse(c.getString(0), c.getString(2), c.getInt(3) == 1, c.getString(4)).copy(dirty = c.getInt(1) == 1) else null }
+    private fun persist(entry: Entry) {
         val v = ContentValues().apply {
             put("id", entry.id); put("document", entry.json()); put("dirty", if (entry.dirty) 1 else 0)
             put("etag", entry.etag)
+            put("candidate", if (entry.candidate) 1 else 0); put("scan_day", entry.scanDay)
         }
         check(writableDatabase.insertWithOnConflict("entries", null, v, SQLiteDatabase.CONFLICT_REPLACE) != -1L) { "日记保存失败" }
+    }
+    private fun publish(entry: Entry) {
         entries.value = (entries.value.filterNot { it.id == entry.id } + entry).sortedByDescending { it.createdAt }
     }
+    fun write(entry: Entry) { persist(entry); publish(entry) }
+    suspend fun scanned(key: String): Boolean = lock.withLock { withContext(Dispatchers.IO) {
+        readableDatabase.rawQuery("SELECT 1 FROM scanned_media WHERE source_key=?", arrayOf(key)).use { it.moveToFirst() }
+    } }
+    suspend fun recordScan(key: String, timestamp: Long?, photo: String?, editingId: () -> String?) = lock.withLock {
+        withContext(Dispatchers.IO) {
+            if (readableDatabase.rawQuery("SELECT 1 FROM scanned_media WHERE source_key=?", arrayOf(key)).use { it.moveToFirst() }) return@withContext
+            val day = timestamp?.let(::scanDay) ?: "unknown"
+            val candidate = if (photo == null) null else {
+                val current = entries.value.firstOrNull { it.candidate && !it.deleted && it.scanDay == day && it.id != editingId() }
+                    ?: Entry(createdAt = timestamp ?: 0L, candidate = true, scanDay = day, dirty = false)
+                current.copy(photos = current.photos + photo, updatedAt = System.currentTimeMillis())
+            }
+            writableDatabase.beginTransaction()
+            try {
+                if (candidate != null) persist(candidate)
+                val row = ContentValues().apply { put("source_key", key); put("entry_id", candidate?.id); put("photo_name", photo) }
+                writableDatabase.insertOrThrow("scanned_media", null, row)
+                writableDatabase.setTransactionSuccessful()
+            } finally { writableDatabase.endTransaction() }
+            if (candidate != null) publish(candidate)
+        }
+    }
+    suspend fun review(id: String, keep: Boolean, selected: List<String>? = null): Pair<Entry, Entry>? = lock.withLock {
+        withContext(Dispatchers.IO) {
+            val before = get(id)?.takeIf { it.candidate && !it.deleted } ?: return@withContext null
+            val next = reviewCandidate(before, keep, selected)
+            write(next)
+            before to next
+        }
+    }
+    suspend fun restoreIfUnchanged(before: Entry, after: Entry): Boolean = lock.withLock { withContext(Dispatchers.IO) {
+        if (get(after.id) != after) return@withContext false
+        write(before); true
+    } }
     suspend fun save(entry: Entry) = lock.withLock { withContext(Dispatchers.IO) { write(entry) } }
     suspend fun resetSyncBaseline() = lock.withLock { withContext(Dispatchers.IO) {
         writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL")

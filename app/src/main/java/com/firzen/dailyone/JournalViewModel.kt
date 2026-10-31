@@ -8,6 +8,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
@@ -31,8 +33,74 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     var saved by mutableStateOf(true); private set
     private var pending = 0
     private var saveFailed = false
-    private val events = Channel<String>(Channel.UNLIMITED)
-    val messages = events.receiveAsFlow()
+    private val events = JournalNotices()
+    val messages = events.flow
+    var scanProgress by mutableStateOf(ScanProgress()); private set
+    private var scanner: PhotoScanner? = null
+    private val editingId = AtomicReference<String?>(null)
+    private val undoActions = mutableMapOf<String, Pair<Entry, Entry>>()
+    fun photoPermissionDenied() { events.trySend("请允许照片访问权限后再开始扫描") }
+    fun startScan() {
+        if (scanProgress.running || loading || busy) return
+        val scan = PhotoScanner(getApplication(), store)
+        scanner = scan; scanProgress = ScanProgress(running = true)
+        viewModelScope.launch {
+            try {
+                val result = scan.run({ editingId.get() }) { state -> scanProgress = state.copy(running = true, stopping = scan.stop.get()) }
+                events.send("扫描${if (scan.stop.get()) "已停止" else "完成"}：识别 ${result.matched} 张人物照片，失败 ${result.failed} 张，候选已保留")
+            } catch (e: Exception) { events.send(e.message ?: "扫描中断，已有候选已保留") }
+            finally { scanner = null; scanProgress = scanProgress.copy(running = false, stopping = false) }
+        }
+    }
+    fun stopScan() {
+        val active = scanner ?: return
+        if (!scanProgress.running) return
+        active.stop.set(true); scanProgress = scanProgress.copy(stopping = true)
+    }
+    fun prepareSelection(entry: Entry, ready: (Entry) -> Unit) {
+        editingId.set(entry.id)
+        viewModelScope.launch {
+            store.lock.lock()
+            val latest = store.entries.value.find { it.id == entry.id }
+            store.lock.unlock()
+            if (latest != null && latest.candidate && !latest.deleted) ready(latest)
+        }
+    }
+    fun closeSelection() { editingId.set(draft?.id) }
+    fun review(id: String, keep: Boolean, selected: List<String>? = null) {
+        viewModelScope.launch {
+            try {
+                val result = store.review(id, keep, selected) ?: return@launch
+                if (draft?.id == id) draft = result.second.takeUnless { it.deleted }
+                editingId.set(draft?.id)
+                val token = UUID.randomUUID().toString()
+                if (undoActions.size >= 32) undoActions.remove(undoActions.keys.first()); undoActions[token] = result
+                events.withUndo(if (keep) "已保留为正式日记" else "候选已删除，相册原图未删除", token)
+            } catch (e: Exception) { events.send(e.message ?: "操作失败") }
+        }
+    }
+    fun undo(token: String) {
+        val action = undoActions.remove(token) ?: return
+        viewModelScope.launch {
+            if (store.restoreIfUnchanged(action.first, action.second)) {
+                if (draft?.id == action.first.id) draft = action.first
+            } else events.send("记录已被修改或同步，无法撤销这次操作")
+        }
+    }
+    fun removePhoto(name: String) {
+        val before = draft ?: return
+        val after = before.copy(photos = before.photos - name, updatedAt = System.currentTimeMillis(), dirty = !before.candidate)
+        change(after)
+        viewModelScope.launch {
+            store.lock.lock(); store.lock.unlock()
+            val actual = store.entries.value.find { it.id == before.id } ?: return@launch
+            if (actual.photos == after.photos) {
+                val token = UUID.randomUUID().toString(); if (undoActions.size >= 32) undoActions.remove(undoActions.keys.first()); undoActions[token] = before to actual
+                events.withUndo("已移除图片，相册原图未删除", token)
+            }
+        }
+    }
+    override fun onCleared() { scanner?.stop?.set(true); super.onCleared() }
     init {
         viewModelScope.launch {
             try { store.load(); config = withContext(Dispatchers.IO) { settings.load() } }
@@ -40,9 +108,9 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             finally { loading = false }
         }
     }
-    fun open(entry: Entry = Entry()) { if (!busy && !loading) { draft = entry; saved = true } }
+    fun open(entry: Entry = Entry()) { if (!busy && !loading) { draft = entry; editingId.set(entry.id); saved = true } }
     fun change(entry: Entry) {
-        val next = entry.copy(updatedAt = System.currentTimeMillis(), dirty = true)
+        val next = entry.copy(updatedAt = System.currentTimeMillis(), dirty = !entry.candidate)
         draft = next
         pending++; saved = false
         // Launch on Main: store's mutex is acquired in edit order before dispatching I/O.
@@ -55,15 +123,16 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     fun back() {
         if (importing) return
         if (!saved) { events.trySend("正在保存，请稍候；如保存失败，请修改内容后重试"); return }
-        draft = null
+        draft = null; editingId.set(null)
     }
     fun delete() {
         val entry = draft ?: return
+        if (entry.candidate) { review(entry.id, false); return }
         change(entry.copy(deleted = true))
         viewModelScope.launch {
             store.lock.lock()
             store.lock.unlock()
-            if (saved) draft = null
+            if (saved) { draft = null; editingId.set(null) }
         }
     }
     fun addPhotos(uris: List<Uri>) {
@@ -90,7 +159,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                 if (latest?.id == original.id && timestamp != null) {
                     when (photoTimePreference) {
                         PhotoTimePreference.ASK -> photoTimePrompt = PhotoTimePrompt(original.id, timestamp)
-                        PhotoTimePreference.USE -> change(latest.copy(createdAt = timestamp))
+                        PhotoTimePreference.USE -> change(latest.withJournalTime(timestamp))
                         PhotoTimePreference.KEEP -> Unit
                     }
                 }
@@ -104,11 +173,12 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     fun choosePhotoTime(use: Boolean, remember: Boolean) {
         val prompt = photoTimePrompt ?: return
         if (remember) updatePhotoTimePreference(if (use) PhotoTimePreference.USE else PhotoTimePreference.KEEP)
-        if (use) draft?.takeIf { it.id == prompt.entryId }?.let { change(it.copy(createdAt = prompt.timestamp)) }
+        if (use) draft?.takeIf { it.id == prompt.entryId }?.let { change(it.withJournalTime(prompt.timestamp)) }
         photoTimePrompt = null
     }
     fun configure(value: CloudConfig, onSaved: () -> Unit) {
         if (busy) return
+        if (scanProgress.running) { settingsError = "请先停止扫描"; return }
         busy = true
         settingsError = null
         viewModelScope.launch {
@@ -124,6 +194,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun sync() {
+        if (scanProgress.running) { events.trySend("请先停止扫描，再同步云存储"); return }
         if (busy || loading || pending > 0 || saveFailed) return
         if (config.url.isBlank()) { events.trySend("请先配置 WebDAV 云存储"); return }
         busy = true

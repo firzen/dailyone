@@ -7,6 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import kotlinx.coroutines.flow.collect
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -36,6 +38,14 @@ import androidx.compose.ui.window.DialogProperties
     val effectiveRegion = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(distanceCenter ?: existing ?: current) else region
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
+    val listState = rememberLazyListState()
+    val latestLoadMore by rememberUpdatedState(loadMoreNearby)
+    LaunchedEffect(nearby.size, moreNearby, loadingMoreNearby, searching, resolvingMap, error, results.isEmpty()) {
+        if (results.isEmpty() && moreNearby && !loadingMoreNearby && !searching && !resolvingMap && error == null) {
+            snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.key == "nearby-pagination" }
+                .collect { atBottom -> if (atBottom) latestLoadMore() }
+        }
+    }
     var query by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf(existing ?: current) }
     var name by remember { mutableStateOf((existing ?: current)?.let { it.name.ifBlank { it.address } }.orEmpty()) }
@@ -101,7 +111,7 @@ import androidx.compose.ui.window.DialogProperties
                 }
                 if (searching || resolvingMap) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (error != null) Text(error, Modifier.padding(horizontal = 16.dp, vertical = 5.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
-                LazyColumn(Modifier.fillMaxWidth().weight(1.1f), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)) {
+                LazyColumn(Modifier.fillMaxWidth().weight(1.1f), state = listState, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)) {
                     item {
                         Row(Modifier.fillMaxWidth().heightIn(min = 40.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(if (results.isNotEmpty()) "搜索结果 · 由近到远" else "附近地点", Modifier.weight(1f).padding(start = 4.dp), fontSize = 13.sp, fontWeight = FontWeight.Medium)
@@ -111,7 +121,7 @@ import androidx.compose.ui.window.DialogProperties
                         if (editName && selected != null) OutlinedTextField(name, { name = it; userSelected = true }, label = { Text("地点名称 / 店名") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     }
                     if (results.isEmpty() && existing != null) item { PlaceChoice(existing, selected, "日记现有位置") { choose(existing) } }
-                    val candidates = if (results.isNotEmpty()) results else nearby
+                    val candidates = if (results.isNotEmpty()) results else nearby.filterNot { point -> existing != null && samePlace(point, existing) }
                     val ordered = if (distanceCenter != null && candidates.all { it.coordinateSystem == distanceCenter.coordinateSystem }) nearestPlaces(candidates, distanceCenter) else candidates
                     if (!resolvingMap && !locating && error == null && results.isEmpty() && nearby.isEmpty()) item {
                         Text("附近暂无地点，可拖动地图或搜索", Modifier.padding(6.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -120,9 +130,12 @@ import androidx.compose.ui.window.DialogProperties
                         val distance = distanceCenter?.takeIf { it.coordinateSystem == point.coordinateSystem }?.let { distanceLabel(distanceMeters(point, it)) }.orEmpty()
                         PlaceChoice(point, selected, distance) { choose(point) }
                     }
-                    if (results.isEmpty() && moreNearby) item {
-                        TextButton(onClick = loadMoreNearby, enabled = !loadingMoreNearby, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (loadingMoreNearby) "正在加载…" else "加载更多地点")
+                    if (results.isEmpty() && moreNearby) item(key = "nearby-pagination") {
+                        Box(Modifier.fillMaxWidth().height(40.dp), contentAlignment = Alignment.Center) {
+                            if (loadingMoreNearby) Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Text("正在加载…", Modifier.padding(start = 8.dp), fontSize = 12.sp)
+                            } else if (error != null) TextButton(onClick = loadMoreNearby) { Text("重试") }
                         }
                     }
                 }

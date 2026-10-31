@@ -11,3 +11,11 @@ internal fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
 }
 internal fun nearestPlaces(points: List<GeoPoint>, center: GeoPoint): List<GeoPoint> = points.sortedBy { distanceMeters(it, center) }
 internal fun distanceLabel(meters: Double): String = if (meters < 1000) "${meters.roundToInt()}米" else String.format(java.util.Locale.SIMPLIFIED_CHINESE, "%.1f公里", meters / 1000)
+
+/** POI identity crosses coordinate systems; legacy locations need both a name and local evidence. */
+internal fun samePlace(a: GeoPoint, b: GeoPoint): Boolean {
+    if (a.poiId.isNotBlank() && b.poiId.isNotBlank()) return a.poiId == b.poiId
+    if (a.name.isBlank() || a.name.trim() != b.name.trim()) return false
+    if (a.address.isNotBlank() && a.address.trim() == b.address.trim()) return true
+    return a.coordinateSystem == b.coordinateSystem && distanceMeters(a, b) <= 25
+}

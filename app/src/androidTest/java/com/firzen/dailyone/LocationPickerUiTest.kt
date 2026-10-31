@@ -58,4 +58,29 @@ class LocationPickerUiTest {
         compose.onNodeWithText("使用此位置").performClick()
         compose.runOnIdle { assertEquals(next.copy(nameOrigin = PlaceNameOrigin.POI), saved) }
     }
+    @Test fun reachingBottomLoadsNextPageWithoutAButton() {
+        val places = mutableStateOf((0 until 25).map { current.copy(name = "地点 $it", poiId = "fixture-$it") })
+        val more = mutableStateOf(true)
+        var requests = 0
+        compose.setContent { MaterialTheme { LocationPicker(current, null, emptyList(), false, false, null,
+            {}, {}, {}, {}, nearby = places.value, moreNearby = more.value, loadMoreNearby = {
+                requests++; places.value = places.value + current.copy(name = "下一页地点", poiId = "next"); more.value = false
+            }) } }
+        compose.runOnIdle { assertEquals(0, requests) }
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(25)
+        compose.onNode(hasScrollToIndexAction()).performTouchInput { swipeUp() }
+        compose.waitUntil { requests == 1 }
+        compose.onNodeWithText("下一页地点").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("加载更多地点").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(1, requests) }
+    }
+    @Test fun existingPlaceAppearsOnceAndOtherNearbyPlacesRemain() {
+        val existing = current.copy(poiId = "existing")
+        val nearby = listOf(existing.copy(coordinateSystem = CoordinateSystem.GCJ02), current.copy(name = "另一个地点", poiId = "other"))
+        compose.setContent { MaterialTheme { LocationPicker(current, existing, emptyList(), false, false, null,
+            {}, {}, {}, {}, nearby = nearby) } }
+        compose.onAllNodesWithText(existing.name).assertCountEquals(1)
+        compose.onNodeWithText("日记现有位置").assertExists()
+        compose.onNodeWithText("另一个地点").assertExists()
+    }
 }

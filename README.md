@@ -3,11 +3,38 @@
 </p>
 
 <h1 align="center">DailyOne</h1>
-<p align="center"><strong>A Day One alternative for Android.</strong><br />用文字、照片、视频和地点，留下每一天。</p>
+<p align="center"><strong>A Day One alternative for Android.</strong><br />把今天留下来，让回忆有迹可循。</p>
 
-DailyOne 是一款使用 Kotlin 与 Jetpack Compose 开发的 Android 日记应用。离线记录，多日记本整理，从 Day One 导入旧日记，再通过自己的 WebDAV 存储手动同步到其他 Android 设备。
+把文字、照片、视频和去过的地方，收进自己的日记本。DailyOne 是面向 Android 的 **Day One alternative**：离线也能记录，用列表、日历和地图重温日常，通过自己的 WebDAV 存储在 Android 设备间同步。
 
-如果你在寻找 **Day One alternative**，DailyOne 提供图文记录、原始媒体保存和已有日记迁移的基础体验。目前支持的功能与限制见下文。
+从 Day One 迁移时，可以连同日记本、原始照片、视频和日期一起导入，让过去的记录继续留在身边。
+
+![DailyOne：记录今天，按日期和地点重温日常](docs/images/showcase.png)
+
+<p align="center">真实 Android 界面 · 独立演示日记 · <a href="docs/screenshots.md">查看完整截图</a></p>
+
+## 为什么选择 DailyOne
+
+| 记下当下 | 换个方式回顾 | 自己保存，自主同步 |
+| --- | --- | --- |
+| 文字、照片、视频一起记录，添加拍摄时间与地点。 | 列表看日常，日历找某天，地图找去过的地方。 | 离线写作、保留原始媒体，按需手动同步到自己的 WebDAV。 |
+
+**接着写，也能接着看。** 多日记本整理不同主题；从日历或地图进入集合、打开单篇后返回，继续停在原来的月份、地图视野和卡片位置。
+
+<details>
+<summary>展开五张应用截图</summary>
+
+| 日常时间线 | 图文日记 | 照片日历 |
+| :---: | :---: | :---: |
+| <img src="docs/images/screenshots/timeline.png" width="230" alt="DailyOne 时间线，按月浏览图文记录" /> | <img src="docs/images/screenshots/entry.png" width="230" alt="DailyOne 日记详情，文字与原图一起保存" /> | <img src="docs/images/screenshots/calendar.png" width="230" alt="DailyOne 日历，以照片缩略图回顾每一天" /> |
+
+| 足迹地图 | 日记集合 |
+| :---: | :---: |
+| <img src="docs/images/screenshots/map.png" width="260" alt="DailyOne 地图，按地点聚合日记" /> | <img src="docs/images/screenshots/collection.png" width="260" alt="DailyOne 集合弹层，查看同一天或同一地点的记录" /> |
+
+截图使用演示文字和图库照片，来自当前应用组件的实际渲染。截图中的日记地点为演示数据，不代表照片的实际拍摄地。
+
+</details>
 
 ## 记录与回顾
 

@@ -72,13 +72,35 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     var mapPick by mutableStateOf<GeoPoint?>(null); private set
     var nearbyPlaces by mutableStateOf<List<GeoPoint>>(emptyList()); private set
     var resolvingMap by mutableStateOf(false); private set
+    var moreNearby by mutableStateOf(false); private set
+    var loadingMoreNearby by mutableStateOf(false); private set
+    private var nearbyPage = 0
+    private fun resetNearby() { nearbyPlaces = emptyList(); nearbyPage = 0; moreNearby = false; loadingMoreNearby = false }
+    private fun firstNearby(points: List<GeoPoint>) { nearbyPlaces = points; nearbyPage = 1; moreNearby = points.size == 25 }
+    fun loadMoreNearby() {
+        val center = mapAnchor ?: return
+        if (!locationPickerOpen || resolvingMap || loadingMoreNearby || !moreNearby || placeResults.isNotEmpty()) return
+        val session = placeSession; val revision = mapRevision; val page = nearbyPage + 1
+        loadingMoreNearby = true; placeError = null
+        mapJob = viewModelScope.launch {
+            try {
+                val points = places.nearby(center, page)
+                if (session == placeSession && revision == mapRevision) {
+                    nearbyPlaces = (nearbyPlaces + points).distinctBy { it.poiId.ifBlank { it.coordinateKey() + it.name } }
+                    nearbyPage = page; moreNearby = points.size == 25
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { if (session == placeSession && revision == mapRevision) placeError = e.message ?: "附近地点加载失败，请重试" }
+            finally { if (session == placeSession && revision == mapRevision) loadingMoreNearby = false }
+        }
+    }
     private var mapJob: kotlinx.coroutines.Job? = null
     private var mapRevision = 0
     private var mapUserInteracted = false
     fun userFocusMap(point: GeoPoint) { mapUserInteracted = true; focusMap(point) }
     fun focusMap(point: GeoPoint) {
         val session = placeSession; val revision = ++mapRevision
-        mapJob?.cancel(); resolvingMap = true; nearbyPlaces = emptyList(); mapPick = null; placeError = null
+        mapJob?.cancel(); resolvingMap = true; resetNearby(); mapPick = null; placeError = null
         searchRevision++; searchJob?.cancel(); searchingPlaces = false; placeResults = emptyList()
         mapJob = viewModelScope.launch {
             try {
@@ -87,7 +109,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                 mapCenter = mapped; mapAnchor = mapped
                 if (!cityWasEdited) searchCity = point.city
                 val nearby = places.nearby(mapped)
-                if (session == placeSession && revision == mapRevision) nearbyPlaces = nearby
+                if (session == placeSession && revision == mapRevision) firstNearby(nearby)
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession && revision == mapRevision) placeError = e.message ?: "地图位置加载失败" }
             finally { if (session == placeSession && revision == mapRevision) resolvingMap = false }
@@ -99,7 +121,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         currentPlace?.let { focusMap(it) }
     }
     fun pickMapCenter(point: GeoPoint) {
-        mapUserInteracted = true; mapAnchor = point; nearbyPlaces = emptyList(); placeResults = emptyList(); searchRevision++; searchJob?.cancel(); searchingPlaces = false
+        mapUserInteracted = true; mapAnchor = point; resetNearby(); placeResults = emptyList(); searchRevision++; searchJob?.cancel(); searchingPlaces = false
         val session = placeSession; val revision = ++mapRevision
         mapJob?.cancel(); mapPick = null; resolvingMap = true; placeError = null
         mapJob = viewModelScope.launch {
@@ -109,7 +131,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                 if (session != placeSession || revision != mapRevision) return@launch
                 mapPick = named; mapAnchor = named
                 val nearby = places.nearby(named)
-                if (session == placeSession && revision == mapRevision) { mapPick = named; mapAnchor = named; nearbyPlaces = nearby; if (!cityWasEdited) searchCity = named.city }
+                if (session == placeSession && revision == mapRevision) { mapPick = named; mapAnchor = named; firstNearby(nearby); if (!cityWasEdited) searchCity = named.city }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession && revision == mapRevision) placeError = e.message ?: "选点地址解析失败" }
             finally { if (session == placeSession && revision == mapRevision) resolvingMap = false }
@@ -161,14 +183,14 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         locationPickerOpen = true; placeSession++; currentPlace = null
         placeResults = emptyList(); placeError = null
         searchRegion = PlaceRegion.AUTO; searchCity = ""; cityWasEdited = false
-        mapCenter = null; mapAnchor = null; mapPick = null; nearbyPlaces = emptyList(); resolvingMap = false; mapUserInteracted = draft?.location != null
+        mapCenter = null; mapAnchor = null; mapPick = null; resetNearby(); resolvingMap = false; mapUserInteracted = draft?.location != null
         searchRevision++; searchJob?.cancel(); searchingPlaces = false
         searchCity = draft?.location?.city.orEmpty()
         draft?.location?.let { focusMap(it) }
     }
     fun closeLocationPicker() {
         locationPickerOpen = false; placeSession++
-        searchJob?.cancel(); currentPlaceJob?.cancel(); mapJob?.cancel(); mapRevision++; searchingPlaces = false; locating = false; resolvingMap = false
+        searchJob?.cancel(); currentPlaceJob?.cancel(); mapJob?.cancel(); mapRevision++; searchingPlaces = false; locating = false; resolvingMap = false; loadingMoreNearby = false
     }
     fun locationPermissionDenied() { placeError = "未允许定位，仍可搜索并选择地点" }
     fun recordCurrentLocation() {

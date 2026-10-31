@@ -90,6 +90,20 @@ class AmapPlacesTest {
         assertEquals("old-shop", updated.poiId)
     }
 
+    @Test fun nearbyIncludesNonBusinessPlacesAndRequestsTheNextPage() = runBlocking {
+        val center = GeoPoint(23.1, 113.3, coordinateSystem = CoordinateSystem.GCJ02, countryCode = "CN")
+        reply("""[{"id":"school","name":"附近小学","typecode":"141201","location":"113.3001,23.1001","adcode":"440105"},{"id":"home","name":"附近小区","typecode":"120301","location":"113.3002,23.1002","adcode":"440105"}]""")
+        assertEquals(listOf("附近小学", "附近小区"), amap.nearby(center).map { it.name })
+        val first = requireNotNull(server.takeRequest().requestUrl)
+        val types = requireNotNull(first.queryParameter("types")).split('|')
+        assertTrue(types.containsAll(listOf("050000", "110000", "120000", "140000", "150000", "190000", "200000", "990000")))
+        assertEquals("distance", first.queryParameter("sortrule"))
+        assertEquals("25", first.queryParameter("offset"))
+        reply("""[{"id":"station","name":"公交站","location":"113.3003,23.1003","adcode":"440105"}]""")
+        assertEquals("公交站", amap.nearby(center, page = 2).single().name)
+        assertEquals("2", server.takeRequest().requestUrl?.queryParameter("page"))
+    }
+
     @Test fun sameCityQueriesUseDistanceSortedNearbySearch() = runBlocking {
         reply("""[{"name":"远店","location":"113.35,23.15","pname":"广东省","cityname":"广州市","adcode":"440105"},{"name":"近店","location":"113.3001,23.1001","pname":"广东省","cityname":"广州市","adcode":"440105"}]""")
         val center = GeoPoint(23.1, 113.3, coordinateSystem = CoordinateSystem.GCJ02, countryCode = "CN", city = "广州市")

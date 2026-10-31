@@ -71,4 +71,17 @@ class PlaceIntegrationTest {
             })
         }
     }
+    @Test fun deviceNearbyPlacesCanLoadAnotherPage() = runBlocking {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("live-place-lookup") == "true")
+        val service = PlaceService(InstrumentationRegistry.getInstrumentation().targetContext)
+        val center = GeoPoint(23.109, 113.324, coordinateSystem = CoordinateSystem.GCJ02, countryCode = "CN", city = "广州市")
+        val first = service.nearby(center)
+        val second = service.nearby(center, page = 2)
+        assertTrue("No nearby places on first page", first.isNotEmpty())
+        assertTrue("No nearby places on next page", second.isNotEmpty())
+        assertTrue("Next page repeated the same places", second.any { next -> first.none { it.poiId == next.poiId && it.name == next.name } })
+        InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply {
+            putString("amap_live_result", "PASS nearby places: ${first.size} + ${second.size} results")
+        })
+    }
 }

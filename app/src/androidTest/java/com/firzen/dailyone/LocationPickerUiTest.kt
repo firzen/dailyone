@@ -26,7 +26,6 @@ class LocationPickerUiTest {
         compose.setContent { MaterialTheme { LocationPicker(current, null, listOf(result), false, false, null,
             {}, {}, { saved = it }, {}) } }
         compose.onNodeWithText("河边咖啡").performScrollTo().performClick()
-        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(2)
         compose.onNodeWithText("修改店名").performScrollTo().performClick()
         compose.onNodeWithText("地点名称 / 店名").performScrollTo().performTextReplacement("河边咖啡旗舰店")
         compose.onNodeWithText("使用此位置").performClick()

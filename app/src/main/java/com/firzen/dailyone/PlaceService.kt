@@ -33,7 +33,7 @@ class PlaceService(context: Context) : PlaceLookup {
         if (PlaceRegion.fromPoint(point)?.provider == PlaceProvider.GOOGLE) throw UnsupportedOperationException("该地区需要 Google 地图，后续接入")
         return amapClient().toMapCoordinate(point)
     }
-    suspend fun nearby(point: GeoPoint): List<GeoPoint> = amapClient().nearby(point)
+    suspend fun nearby(point: GeoPoint, page: Int = 1): List<GeoPoint> = amapClient().nearby(point, page)
     suspend fun refreshShop(point: GeoPoint): GeoPoint {
         val identified = if (point.countryCode.isBlank() && point.coordinateSystem == CoordinateSystem.WGS84) systemReverse(point) ?: point else point
         if (PlaceRegion.fromPoint(identified)?.provider != PlaceProvider.AMAP) throw UnsupportedOperationException("地区未知或属于其他地区，Google 店铺更新尚未接入")

@@ -154,7 +154,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             if (vm.locationPickerOpen && draft != null) LocationPicker(vm.currentPlace, draft.location, vm.placeResults,
                 vm.locating, vm.searchingPlaces, vm.placeError, vm::searchPlaces, { vm.prepareCurrentMap(); fetchCurrentPlace() }, vm::selectPlace, vm::closeLocationPicker,
                 vm.searchRegion, vm.searchCity, vm::updateSearchRegion, vm::updateSearchCity,
-                vm.amapAndroidKey, vm.mapPrivacyAgreed, vm::agreeMapPrivacy, vm.mapCenter, vm.mapPick, vm.nearbyPlaces, vm.resolvingMap, vm::userFocusMap, vm::pickMapCenter, vm.mapAnchor)
+                vm.amapAndroidKey, vm.mapPrivacyAgreed, vm::agreeMapPrivacy, vm.mapCenter, vm.mapPick, vm.nearbyPlaces, vm.resolvingMap, vm::userFocusMap, vm::pickMapCenter, vm.mapAnchor, vm.moreNearby, vm.loadingMoreNearby, vm::loadMoreNearby)
             batchDialog?.let { merge ->
                 val chosen = entries.filter { it.id in selectedIds }
                 val preview = if (merge && chosen.size > 1) journalBatch(chosen, true).first().second else null

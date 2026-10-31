@@ -65,14 +65,15 @@ internal class AmapPlaces(private val key: String, private val client: OkHttpCli
         convertedPoints[point.coordinateKey()] = located
         return located
     }
-    private suspend fun nearbyResponse(point: GeoPoint, radius: Int = 1000): org.json.JSONArray {
+    private suspend fun nearbyResponse(point: GeoPoint, radius: Int = 1000, businessesOnly: Boolean = true, page: Int = 1): org.json.JSONArray {
         val mapped = toMapCoordinate(point)
         return request("v3/place/around", mapOf("location" to coordinates(mapped), "radius" to radius.toString(),
-            "sortrule" to "distance", "types" to "050000|060000|070000|080000|090000|100000", "offset" to "12", "extensions" to "all"))
+            "sortrule" to "distance", "types" to if (businessesOnly) "050000|060000|070000|080000|090000|100000" else ALL_PLACE_TYPES,
+            "offset" to if (businessesOnly) "12" else "25", "page" to page.toString(), "extensions" to "all"))
             .optJSONArray("pois") ?: org.json.JSONArray()
     }
-    suspend fun nearby(point: GeoPoint): List<GeoPoint> {
-        val pois = nearbyResponse(point)
+    suspend fun nearby(point: GeoPoint, page: Int = 1): List<GeoPoint> {
+        val pois = nearbyResponse(point, businessesOnly = false, page = page)
         val region = PlaceRegion.fromPoint(point) ?: PlaceRegion.MAINLAND
         return (0 until pois.length()).mapNotNull { parsePoi(pois.optJSONObject(it), region) }
             .filter { PlaceRegion.fromPoint(it)?.provider == PlaceProvider.AMAP }
@@ -163,3 +164,6 @@ internal class AmapPlaces(private val key: String, private val client: OkHttpCli
         }
     }
 }
+
+// AMap POI categories, including addresses, public facilities, indoor facilities and entrances.
+private val ALL_PLACE_TYPES = ((1..20).toList() + listOf(22, 97, 98, 99)).joinToString("|") { "%02d0000".format(java.util.Locale.ROOT, it) }

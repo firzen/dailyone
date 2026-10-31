@@ -125,7 +125,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         WindowCompat.getInsetsController((view.context as Activity).window, view).isAppearanceLightStatusBars = draft != null && !dark
     }
     LaunchedEffect(vm) { vm.messages.collect { notice ->
-        if (snackbar.showSnackbar(notice.message, actionLabel = notice.undoId?.let { "撤销" }) == SnackbarResult.ActionPerformed) notice.undoId?.let(vm::undo)
+        if (snackbar.showSnackbar(notice.message, actionLabel = notice.undoId?.let { "撤销" }, duration = if (notice.undoId != null) SnackbarDuration.Long else SnackbarDuration.Short) == SnackbarResult.ActionPerformed) notice.undoId?.let(vm::undo)
     } }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = if (draft == null) { if (dark) Color(0xFF252B30) else Color(0xFF333C41) } else MaterialTheme.colorScheme.background) { insets ->
         Column(Modifier.fillMaxSize().padding(insets)) {

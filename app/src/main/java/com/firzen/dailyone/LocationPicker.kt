@@ -97,8 +97,8 @@ import androidx.compose.ui.window.DialogProperties
                         Text(if (results.isNotEmpty()) "搜索结果 · 距离由近到远" else "附近店铺与地点", Modifier.padding(6.dp), fontWeight = FontWeight.Medium)
                         if (locating) Text("正在获取当前位置…", Modifier.padding(6.dp), fontSize = 12.sp)
                     }
-                    if (results.isEmpty() && current != null) item { PlaceChoice(current, selected, "当前位置") { choose(current) } }
                     if (results.isEmpty() && existing != null && (current == null || !existing.sameCoordinates(current))) item { PlaceChoice(existing, selected, "日记现有位置") { choose(existing) } }
+                    if (results.isEmpty() && current != null) item { PlaceChoice(current, selected, "当前位置") { choose(current) } }
                     val candidates = if (results.isNotEmpty()) results else nearby
                     val ordered = if (distanceCenter != null && candidates.all { it.coordinateSystem == distanceCenter.coordinateSystem }) nearestPlaces(candidates, distanceCenter) else candidates
                     items(ordered) { point ->

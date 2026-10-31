@@ -17,11 +17,22 @@ import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.MapView
 import com.google.android.gms.maps.model.LatLng
 
-@Composable internal fun GoogleMapPanel(center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier, onLoaded: () -> Unit = {}) {
+@Composable internal fun GoogleMapPanel(center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier, points: List<JournalMapPoint> = emptyList(), pick: (List<String>) -> Unit = {}, fitPoints: Boolean = true, onLoaded: () -> Unit = {}) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val latestMoved by rememberUpdatedState(moved)
     val latestLoaded by rememberUpdatedState(onLoaded)
+    val latestPoints by rememberUpdatedState(points)
+    val latestPick by rememberUpdatedState(pick)
+    fun drawMarkers(google: GoogleMap) {
+        google.clear()
+        journalClusters(latestPoints, google.cameraPosition.zoom).forEach { cluster ->
+            google.addMarker(com.google.android.gms.maps.model.MarkerOptions()
+                .position(LatLng(cluster.point.latitude, cluster.point.longitude))
+                .icon(com.google.android.gms.maps.model.BitmapDescriptorFactory.fromBitmap(journalMarkerBitmap(cluster.ids.size, context.resources.displayMetrics.density)))
+                .anchor(.5f, .5f))?.tag = cluster.ids
+        }
+    }
     val available = remember(context) { GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS }
     if (!available) {
         Box(modifier, contentAlignment = Alignment.Center) { Text("请安装或更新 Google Play 服务后使用地图") }; return
@@ -40,7 +51,14 @@ import com.google.android.gms.maps.model.LatLng
                 google.uiSettings.isMapToolbarEnabled = false
                 var userGesture = false
                 google.setOnCameraMoveStartedListener { reason -> userGesture = reason == GoogleMap.OnCameraMoveStartedListener.REASON_GESTURE }
+                google.setOnMarkerClickListener { marker ->
+                    @Suppress("UNCHECKED_CAST")
+                    val ids = marker.tag as? List<String>
+                    ids?.let(latestPick)
+                    true
+                }
                 google.setOnCameraIdleListener {
+                    drawMarkers(google)
                     if (userGesture) {
                         userGesture = false
                         val target = google.cameraPosition.target
@@ -66,6 +84,7 @@ import com.google.android.gms.maps.model.LatLng
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) resume()
         onDispose {
             disposed = true; lifecycle.removeObserver(observer)
+            map?.setOnMarkerClickListener(null)
             map?.setOnCameraMoveStartedListener(null); map?.setOnCameraIdleListener(null); map?.setOnMapLoadedCallback(null)
             stop(); view.onDestroy(); map = null
         }
@@ -73,6 +92,18 @@ import com.google.android.gms.maps.model.LatLng
     LaunchedEffect(map, center?.coordinateKey()) {
         val point = center?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 } ?: return@LaunchedEffect
         map?.let { google -> google.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(point.latitude, point.longitude), google.cameraPosition.zoom.coerceAtLeast(16f))) }
+    }
+    LaunchedEffect(map, points) {
+        val google = map ?: return@LaunchedEffect
+        if (points.isEmpty()) { google.clear(); return@LaunchedEffect }
+        drawMarkers(google)
+        if (!fitPoints || center != null) return@LaunchedEffect
+        if (points.size == 1) google.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(points.first().point.latitude, points.first().point.longitude), 14f))
+        else {
+            val bounds = com.google.android.gms.maps.model.LatLngBounds.builder()
+            points.forEach { bounds.include(LatLng(it.point.latitude, it.point.longitude)) }
+            google.moveCamera(CameraUpdateFactory.newLatLngBounds(bounds.build(), context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels / 2, (48 * context.resources.displayMetrics.density).toInt()))
+        }
     }
     AndroidView(factory = { view }, modifier = modifier)
 }

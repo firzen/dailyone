@@ -52,6 +52,14 @@ class PlaceService(context: Context) : PlaceLookup {
             if (identified.coordinateSystem == CoordinateSystem.WGS84) gpsPoints[mapped.coordinateKey()] = identified
         }
     }
+    suspend fun mapCoordinates(points: List<GeoPoint>, provider: PlaceProvider): List<GeoPoint> {
+        if (provider == PlaceProvider.GOOGLE) return points.map { mapCoordinate(it, provider) }
+        return amapClient().toMapCoordinates(points).also { mapped ->
+            points.zip(mapped).forEach { (original, converted) ->
+                if (original.coordinateSystem == CoordinateSystem.WGS84) gpsPoints[converted.coordinateKey()] = original
+            }
+        }
+    }
     suspend fun nearby(point: GeoPoint, page: Int = 1, provider: PlaceProvider? = null): List<GeoPoint> =
         if ((provider ?: PlaceProvider.defaultFor(point)) == PlaceProvider.GOOGLE) {
             if (page == 1) googleClient().nearby(mapCoordinate(point, PlaceProvider.GOOGLE), includeAmapRegions = provider != null) else emptyList()

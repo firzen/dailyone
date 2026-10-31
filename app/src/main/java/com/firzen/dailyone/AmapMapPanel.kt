@@ -19,10 +19,21 @@ import com.amap.api.maps.model.LatLng
 import kotlin.math.abs
 
 /** Only composed after the user has accepted the SDK privacy notice. */
-@Composable internal fun AmapMapPanel(androidKey: String, center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier) {
+@Composable internal fun AmapMapPanel(androidKey: String, center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier, points: List<JournalMapPoint> = emptyList(), pick: (List<String>) -> Unit = {}, fitPoints: Boolean = true) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val latestMoved by rememberUpdatedState(moved)
+    val latestPoints by rememberUpdatedState(points)
+    val latestPick by rememberUpdatedState(pick)
+    fun drawMarkers(map: AMap) {
+        map.clear()
+        journalClusters(latestPoints, map.cameraPosition.zoom).forEach { cluster ->
+            map.addMarker(com.amap.api.maps.model.MarkerOptions()
+                .position(LatLng(cluster.point.latitude, cluster.point.longitude))
+                .icon(com.amap.api.maps.model.BitmapDescriptorFactory.fromBitmap(journalMarkerBitmap(cluster.ids.size, context.resources.displayMetrics.density)))
+                .anchor(.5f, .5f)).`object` = cluster.ids
+        }
+    }
     var ignoredTarget by remember { mutableStateOf<LatLng?>(null) }
     val view = remember(androidKey, context) {
         runCatching {
@@ -41,11 +52,18 @@ import kotlin.math.abs
         map.uiSettings.isRotateGesturesEnabled = false
         map.uiSettings.isTiltGesturesEnabled = false
         map.uiSettings.isScaleControlsEnabled = true
+        map.setOnMarkerClickListener { marker ->
+            @Suppress("UNCHECKED_CAST")
+            val ids = marker.`object` as? List<String>
+            ids?.let(latestPick)
+            true
+        }
         var userGesture = false
         map.setOnMapTouchListener { event -> if (event?.actionMasked == android.view.MotionEvent.ACTION_DOWN) userGesture = true }
         map.setOnCameraChangeListener(object : AMap.OnCameraChangeListener {
             override fun onCameraChange(position: CameraPosition?) = Unit
             override fun onCameraChangeFinish(position: CameraPosition?) {
+                if (latestPoints.isNotEmpty()) drawMarkers(map)
                 val target = position?.target ?: return
                 val ignored = ignoredTarget
                 ignoredTarget = null
@@ -62,7 +80,7 @@ import kotlin.math.abs
         } }
         lifecycle.addObserver(observer)
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) view.onResume()
-        onDispose { lifecycle.removeObserver(observer); map.setOnCameraChangeListener(null); map.setOnMapTouchListener(null); view.onPause(); view.onDestroy() }
+        onDispose { lifecycle.removeObserver(observer); map.setOnMarkerClickListener(null); map.setOnCameraChangeListener(null); map.setOnMapTouchListener(null); view.onPause(); view.onDestroy() }
     }
     LaunchedEffect(view, center?.coordinateKey()) {
         if (center != null) {
@@ -71,6 +89,17 @@ import kotlin.math.abs
             ignoredTarget = target
             val zoom = view.map.cameraPosition?.zoom?.coerceAtLeast(16f) ?: 16f
             view.map.animateCamera(CameraUpdateFactory.newLatLngZoom(target, zoom))
+        }
+    }
+    LaunchedEffect(view, points) {
+        if (points.isEmpty()) { view.map.clear(); return@LaunchedEffect }
+        drawMarkers(view.map)
+        if (!fitPoints || center != null) return@LaunchedEffect
+        if (points.size == 1) view.map.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(points.first().point.latitude, points.first().point.longitude), 14f))
+        else {
+            val bounds = com.amap.api.maps.model.LatLngBounds.builder()
+            points.forEach { bounds.include(LatLng(it.point.latitude, it.point.longitude)) }
+            view.map.moveCamera(CameraUpdateFactory.newLatLngBounds(bounds.build(), context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels / 2, (48 * context.resources.displayMetrics.density).toInt()))
         }
     }
     AndroidView(factory = { view }, modifier = modifier)

@@ -40,6 +40,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -85,6 +86,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     val importPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { it?.let(vm::previewDayOne) }
     val listState = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
+    var journalView by rememberSaveable { mutableStateOf(JournalView.LIST) }
     var settingsOpen by remember { mutableStateOf(false) }
     val draft = vm.draft?.let { current -> current.copy(photoLocations = all.firstOrNull { it.id == current.id }?.photoLocations.orEmpty() + current.photoLocations) }
     val context = LocalContext.current
@@ -142,13 +144,17 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             if (vm.importStatus.isNotEmpty()) Text(vm.importStatus, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp))
             Box(Modifier.weight(1f)) {
-            if (draft == null) JournalList(listState, entries, vm.loading, vm.busy, vm.config.url.isNotBlank(),
+            if (draft == null) key(vm.selectedNotebook) { JournalList(listState, entries, vm.loading, vm.busy, vm.config.url.isNotBlank(),
                 vm.store.mediaDir, { vm.open(it) }, { vm.open() }, { settingsOpen = true }, vm::sync, vm.scanProgress, startScan, vm::stopScan,
                 { entry, retain -> if (retain) keep(entry) else vm.review(entry.id, false) }, selectedIds, toggleSelection,
                 { selectedIds = emptySet() }, { batchDialog = false }, { mergeNotebook = null; batchDialog = true }, {
                     NotebookMenu(books, vm.selectedNotebook, !vm.busy && !vm.loading && !vm.importing,
                         { vm.selectedNotebook = it; selectedIds = emptySet() }, vm::saveNotebook)
-                }, books.associate { it.id to it.name })
+                }, books.associate { it.id to it.name }, journalView, { journalView = it },
+                vm.amapAndroidKey, vm.mapPrivacyAgreed, vm::agreeMapPrivacy, { collection ->
+                    val timestamp = collection.day?.atTime(java.time.LocalTime.now())?.atZone(ZoneId.systemDefault())?.toInstant()?.toEpochMilli() ?: System.currentTimeMillis()
+                    vm.open(Entry(createdAt = timestamp, notebookId = vm.selectedNotebook ?: DEFAULT_NOTEBOOK, recordedLocation = collection.location))
+                }) }
             else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete, vm::removePhoto, { keep(it) }, recordLocation, vm.locating, books, vm::addVideos)
             if (vm.locationPickerOpen && draft != null) LocationPicker(vm.currentPlace, draft.location, vm.placeResults,
                 vm.locating, vm.searchingPlaces, vm.placeError, vm::searchPlaces, { vm.prepareCurrentMap(); fetchCurrentPlace() }, vm::selectPlace, vm::closeLocationPicker,
@@ -209,12 +215,19 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun JournalList(listState: LazyListState, entries: List<Entry>, loading: Boolean, busy: Boolean, configured: Boolean,
     media: File, open: (Entry) -> Unit, create: () -> Unit, settings: () -> Unit, sync: () -> Unit,
     scan: ScanProgress, startScan: () -> Unit, stopScan: () -> Unit, review: (Entry, Boolean) -> Unit, selection: Set<String>, toggle: (Entry) -> Unit,
-    clearSelection: () -> Unit, deleteSelected: () -> Unit, mergeSelected: () -> Unit, notebookMenu: @Composable () -> Unit, notebookNames: Map<String, String> = emptyMap()) {
+    clearSelection: () -> Unit, deleteSelected: () -> Unit, mergeSelected: () -> Unit, notebookMenu: @Composable () -> Unit, notebookNames: Map<String, String>, view: JournalView, changeView: (JournalView) -> Unit,
+    androidKey: String, privacyAgreed: Boolean, agreePrivacy: () -> Unit, createInCollection: (JournalCollection) -> Unit) {
     val dark = isSystemInDarkTheme()
     val chrome = if (dark) Color(0xFF252B30) else Color(0xFF333C41)
+    val context = LocalContext.current
+    val browsePlaces = remember(context) { PlaceService(context) }
+    var collection by remember { mutableStateOf<JournalCollection?>(null) }
+    collection?.let { selected -> JournalCollectionSheet(selected, entries, media, { collection = null },
+        { collection = null; open(it) }, { collection = null; createInCollection(selected) }) }
     Column(Modifier.fillMaxSize().background(chrome)) {
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (selection.isNotEmpty()) IconButton(onClick = clearSelection) { Icon(Icons.Outlined.Close, "退出多选", tint = Color.White) }
@@ -232,8 +245,13 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
         }
         Column(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)).background(MaterialTheme.colorScheme.background)) {
+            if (selection.isEmpty()) SecondaryTabRow(selectedTabIndex = view.ordinal) {
+                JournalView.entries.forEach { mode -> Tab(selected = mode == view, onClick = { changeView(mode) }, text = { Text(mode.label) }) }
+            }
             Box(Modifier.fillMaxSize()) {
                 if (loading) CircularProgressIndicator(Modifier.align(Alignment.Center))
+                else if (view == JournalView.CALENDAR) JournalCalendar(entries, media) { collection = it }
+                else if (view == JournalView.MAP) JournalMap(entries, browsePlaces, androidKey, privacyAgreed, agreePrivacy) { collection = it }
                 else LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 9.dp, end = 9.dp, bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     item(key = "photo-scan") {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 7.dp), verticalAlignment = Alignment.CenterVertically) {

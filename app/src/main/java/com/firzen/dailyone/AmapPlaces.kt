@@ -56,14 +56,21 @@ internal class AmapPlaces(private val key: String, private val client: OkHttpCli
             poiId = closePoi?.let { text(it, "id") }.orEmpty(), nameOrigin = PlaceNameOrigin.AUTO)
     }
     private val convertedPoints = java.util.concurrent.ConcurrentHashMap<String, GeoPoint>()
-    suspend fun toMapCoordinate(point: GeoPoint): GeoPoint {
-        if (point.coordinateSystem == CoordinateSystem.GCJ02) return point
-        convertedPoints[point.coordinateKey()]?.let { return it }
-        val result = request("v3/assistant/coordinate/convert", mapOf("locations" to coordinates(point), "coordsys" to "gps"))
-        val mapped = parseCoordinate(result.optString("locations").substringBefore(';')) ?: throw IOException("高德坐标转换未返回有效位置")
-        val located = mapped.copy(countryCode = point.countryCode, city = point.city)
-        convertedPoints[point.coordinateKey()] = located
-        return located
+    suspend fun toMapCoordinate(point: GeoPoint): GeoPoint = toMapCoordinates(listOf(point)).single()
+    suspend fun toMapCoordinates(points: List<GeoPoint>): List<GeoPoint> {
+        val missing = points.filter { it.coordinateSystem == CoordinateSystem.WGS84 && !convertedPoints.containsKey(it.coordinateKey()) }
+            .distinctBy { it.coordinateKey() }
+        for (batch in missing.chunked(40)) {
+            val result = request("v3/assistant/coordinate/convert", mapOf("locations" to batch.joinToString("|") { coordinates(it) }, "coordsys" to "gps"))
+            val values = result.optString("locations").split(';')
+            require(values.size == batch.size) { "高德坐标转换返回数量不匹配" }
+            val mapped = values.map { parseCoordinate(it) ?: throw IOException("高德坐标转换未返回有效位置") }
+            batch.zip(mapped).forEach { (original, converted) -> convertedPoints[original.coordinateKey()] = converted }
+        }
+        return points.map { point ->
+            if (point.coordinateSystem == CoordinateSystem.GCJ02) point
+            else requireNotNull(convertedPoints[point.coordinateKey()]).copy(countryCode = point.countryCode, city = point.city)
+        }
     }
     private suspend fun nearbyResponse(point: GeoPoint, radius: Int = 1000, businessesOnly: Boolean = true, page: Int = 1): org.json.JSONArray {
         val mapped = toMapCoordinate(point)

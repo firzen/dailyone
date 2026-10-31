@@ -14,6 +14,23 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
+/** Fast map preview only. Editing and backfill continue to request a fresh fix. */
+internal fun recentCurrentLocation(context: Context): GeoPoint? {
+    val manager = context.getSystemService(LocationManager::class.java)
+    val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    if (!fine && !coarse) return null
+    val now = android.os.SystemClock.elapsedRealtimeNanos()
+    return manager.getProviders(true).mapNotNull { provider ->
+        runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
+    }.filter { location ->
+        val age = now - location.elapsedRealtimeNanos
+        age >= 0 && age <= java.util.concurrent.TimeUnit.MINUTES.toNanos(30)
+    }.maxByOrNull { it.elapsedRealtimeNanos }?.let { location ->
+        runCatching { GeoPoint(location.latitude, location.longitude) }.getOrNull()
+    }
+}
+
 /** A fresh foreground fix only; historical journal backfill never calls this function. */
 suspend fun currentLocation(context: Context): GeoPoint? = withTimeoutOrNull(20_000) {
     val manager = context.getSystemService(LocationManager::class.java)

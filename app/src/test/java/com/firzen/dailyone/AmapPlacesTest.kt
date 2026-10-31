@@ -25,6 +25,31 @@ class AmapPlacesTest {
     }
     @After fun cleanup() { server.shutdown() }
     private fun reply(pois: String) = server.enqueue(MockResponse().setBody("""{"status":"1","infocode":"10000","pois":$pois}"""))
+    @Test fun batchConversionChunksDeduplicatesAndCachesWithoutMovingOriginalCoordinates() = runBlocking {
+        val originals = (0..40).map { GeoPoint(23.0, 113.0 + it * .001, countryCode = "CN", city = "广州") }
+        server.enqueue(MockResponse().setBody("""{"status":"1","locations":"${(0..39).joinToString(";") { "${113.01 + it * .001},23.01" }}"}"""))
+        server.enqueue(MockResponse().setBody("""{"status":"1","locations":"113.05,23.01"}"""))
+        val converted = amap.toMapCoordinates(originals + originals.first())
+        assertEquals(42, converted.size)
+        assertEquals(40, server.takeRequest().requestUrl!!.queryParameter("locations")!!.split('|').size)
+        assertEquals(1, server.takeRequest().requestUrl!!.queryParameter("locations")!!.split('|').size)
+        assertEquals(converted.first(), converted.last())
+        assertTrue(converted.all { it.coordinateSystem == CoordinateSystem.GCJ02 && it.city == "广州" })
+        assertTrue(originals.all { it.coordinateSystem == CoordinateSystem.WGS84 && it.latitude == 23.0 })
+        assertEquals(converted.take(41), amap.toMapCoordinates(originals))
+        assertEquals(2, server.requestCount)
+    }
+    @Test fun truncatedBatchDoesNotCachePartialCoordinateResults() = runBlocking {
+        val originals = listOf(GeoPoint(23.0, 113.0), GeoPoint(24.0, 114.0))
+        server.enqueue(MockResponse().setBody("""{"status":"1","locations":"113.01,23.01"}"""))
+        try { amap.toMapCoordinates(originals); fail("Truncated result must be rejected") }
+        catch (_: IllegalArgumentException) { }
+        server.enqueue(MockResponse().setBody("""{"status":"1","locations":"113.01,23.01;114.01,24.01"}"""))
+        assertEquals(2, amap.toMapCoordinates(originals).size)
+        assertEquals(2, server.requestCount)
+        assertEquals(2, server.takeRequest().requestUrl!!.queryParameter("locations")!!.split('|').size)
+        assertEquals(2, server.takeRequest().requestUrl!!.queryParameter("locations")!!.split('|').size)
+    }
     @Test fun mainlandSearchRequestsFullRegionalMetadataAndRetainsGcjCoordinates() = runBlocking {
         reply("""[{"name":"广州塔","location":"113.33,23.11","pname":"广东省","cityname":"广州市","adname":"海珠区","adcode":"440105","address":"测试路1号"}]""")
         val point = amap.search("广州塔", PlaceRegion.MAINLAND, "广州").single()

@@ -17,16 +17,55 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-class JournalStore(context: Context, databaseName: String = "journal.db", photoDirectoryName: String = "photos") : SQLiteOpenHelper(context, databaseName, null, 3) {
+class JournalStore(context: Context, databaseName: String = "journal.db", photoDirectoryName: String = "photos") : SQLiteOpenHelper(context, databaseName, null, 4) {
     private val appContext = context.applicationContext
     val mediaDir = File(context.filesDir, photoDirectoryName).apply { mkdirs() }
+    val notebooks = MutableStateFlow<List<Notebook>>(emptyList())
     val entries = MutableStateFlow<List<Entry>>(emptyList())
     val lock = Mutex()
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE entries (id TEXT PRIMARY KEY, document TEXT NOT NULL, dirty INTEGER NOT NULL, etag TEXT, candidate INTEGER NOT NULL DEFAULT 0, scan_day TEXT)")
         createScanTable(db)
         createPhotoSources(db)
+        createNotebooks(db)
     }
+    private fun createNotebooks(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS notebooks (id TEXT PRIMARY KEY, document TEXT NOT NULL, dirty INTEGER NOT NULL, etag TEXT)")
+        val book = Notebook(DEFAULT_NOTEBOOK, "默认日记本", updatedAt = 0)
+        db.insertWithOnConflict("notebooks", null, ContentValues().apply {
+            put("id", book.id); put("document", book.json()); put("dirty", 1)
+        }, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+    fun refreshNotebooks() {
+        notebooks.value = readableDatabase.rawQuery("SELECT document,dirty,etag FROM notebooks", null).use { c ->
+            buildList { while (c.moveToNext()) add(Notebook.parse(c.getString(0), c.getString(2)).copy(dirty = c.getInt(1) == 1)) }
+        }.sortedBy { it.name }
+    }
+    fun writeNotebook(book: Notebook) {
+        check(writableDatabase.insertWithOnConflict("notebooks", null, ContentValues().apply {
+            put("id", book.id); put("document", book.json()); put("dirty", if (book.dirty) 1 else 0); put("etag", book.etag)
+        }, SQLiteDatabase.CONFLICT_REPLACE) != -1L) { "日记本保存失败" }
+        refreshNotebooks()
+    }
+    suspend fun saveNotebook(book: Notebook) = lock.withLock { withContext(Dispatchers.IO) { writeNotebook(book) } }
+    suspend fun cleanImportedDayOneText(ids: Set<String>): Int = lock.withLock { withContext(Dispatchers.IO) {
+        val changed = entries.value.filter { it.id in ids && !it.deleted }.mapNotNull { entry ->
+            val body = cleanDayOneText(entry.body); val title = cleanDayOneText(entry.title)
+            if (body == entry.body && title == entry.title) null else entry.copy(body = body, title = title, dirty = true)
+        }
+        if (changed.isNotEmpty()) transactionWrite(changed)
+        changed.size
+    } }
+    suspend fun importRecords(books: List<Notebook>, records: List<Entry>): Int = lock.withLock { withContext(Dispatchers.IO) {
+        val fresh = records.filter { get(it.id) == null }
+        writableDatabase.beginTransaction()
+        try {
+            books.filter { b -> notebooks.value.none { it.id == b.id } }.forEach(::writeNotebook)
+            fresh.forEach(::persist)
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction(); refreshNotebooks(); refresh() }
+        fresh.size
+    } }
     private fun createPhotoSources(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS photo_replacements (old_name TEXT PRIMARY KEY, new_name TEXT NOT NULL)")
         db.execSQL("CREATE TABLE IF NOT EXISTS photo_sources (photo_name TEXT PRIMARY KEY, source_uri TEXT NOT NULL, latitude REAL, longitude REAL)")
@@ -41,8 +80,9 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
             createScanTable(db)
         }
         if (oldVersion < 3) createPhotoSources(db)
+        if (oldVersion < 4) createNotebooks(db)
     }
-    suspend fun load() = lock.withLock { withContext(Dispatchers.IO) { refresh() } }
+    suspend fun load() = lock.withLock { withContext(Dispatchers.IO) { refreshNotebooks(); refresh() } }
     private fun read(): List<Entry> = readableDatabase.rawQuery("SELECT document, dirty, etag, candidate, scan_day FROM entries", null).use { c ->
         buildList { while (c.moveToNext()) add(Entry.parse(c.getString(0), c.getString(2), c.getInt(3) == 1, c.getString(4)).copy(dirty = c.getInt(1) == 1)) }
     }
@@ -98,10 +138,10 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         if (actions.any { get(it.second.id) != it.second }) return@withContext false
         transactionWrite(actions.map { it.first }); true
     } }
-    suspend fun batch(ids: Set<String>, merge: Boolean): List<Pair<Entry, Entry>> = lock.withLock { withContext(Dispatchers.IO) {
+    suspend fun batch(ids: Set<String>, merge: Boolean, notebookId: String? = null): List<Pair<Entry, Entry>> = lock.withLock { withContext(Dispatchers.IO) {
         val selected = ids.mapNotNull { get(it)?.takeUnless { entry -> entry.deleted } }
         require(selected.size == ids.size) { "所选日记已变化，请重新选择" }
-        val action = journalBatch(selected, merge)
+        val action = journalBatch(selected, merge, targetNotebook = notebookId)
         transactionWrite(action.map { it.second }); action
     } }
     private fun transactionWrite(records: List<Entry>) {
@@ -130,6 +170,7 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
     } }
     suspend fun resetSyncBaseline() = lock.withLock { withContext(Dispatchers.IO) {
         writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL")
+        writableDatabase.execSQL("UPDATE notebooks SET dirty = 1, etag = NULL"); refreshNotebooks()
         refresh()
     } }
     suspend fun photoTime(uri: Uri): Long? = withContext(Dispatchers.IO) {
@@ -201,7 +242,7 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         val photos = entry.photos.map(::resolve).distinct()
         val locations = entry.photoLocations.mapKeys { resolve(it.key) }.toMutableMap()
         photos.forEach { knownPhotoLocation(it)?.let { point -> locations.putIfAbsent(it, point) } }
-        return entry.copy(photos = photos, photoLocations = locations.filterKeys { it in photos })
+        return entry.copy(photos = photos, photoLocations = locations.filterKeys { it in photos }, mediaOrder = entry.mediaOrder.map(::resolve).filter { it in photos || it in entry.videos }.distinct())
     }
     suspend fun replacePhotos(replacements: Map<String, String>): Int = lock.withLock { withContext(Dispatchers.IO) {
         val affected = entries.value.filter { !it.deleted && it.photos.any(replacements::containsKey) }

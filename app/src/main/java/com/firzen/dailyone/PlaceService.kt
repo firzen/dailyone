@@ -26,13 +26,13 @@ class PlaceService(context: Context) : PlaceLookup {
     private var activeClient: Pair<String, AmapPlaces>? = null
     private suspend fun amapClient(): AmapPlaces {
         val key = withContext(Dispatchers.IO) { settings.loadAmapKey() }
-        require(validAmapKey(key)) { "请先在设置中保存高德 Web服务 Key" }
+        require(validAmapKey(key)) { "地点服务暂不可用，请稍后重试" }
         return activeClient?.takeIf { it.first == key }?.second ?: AmapPlaces(key).also { activeClient = key to it }
     }
     private var googleClient: Pair<String, GooglePlaces>? = null
     private suspend fun googleClient(): GooglePlaces {
         val key = withContext(Dispatchers.IO) { settings.loadGoogleKey() }
-        require(validGoogleKey(key)) { "请先在设置中保存 Google 地点服务 Key" }
+        require(validGoogleKey(key)) { "地点服务暂不可用，请稍后重试" }
         return googleClient?.takeIf { it.first == key }?.second ?: GooglePlaces(key).also { googleClient = key to it }
     }
     private suspend fun identify(point: GeoPoint): GeoPoint = if (point.countryCode.isBlank() && point.coordinateSystem == CoordinateSystem.WGS84)
@@ -84,7 +84,7 @@ class PlaceService(context: Context) : PlaceLookup {
         val region = PlaceRegion.fromPoint(system)
         if (region?.provider == PlaceProvider.GOOGLE) return googleClient().reverse(point.copy(countryCode = system?.countryCode.orEmpty(), city = system?.city.orEmpty()))
         if (point.coordinateSystem == CoordinateSystem.GCJ02 || region?.provider == PlaceProvider.AMAP && key.isNotBlank()) {
-            require(validAmapKey(key)) { "请先在设置中保存高德 Web服务 Key" }
+            require(validAmapKey(key)) { "地点服务暂不可用，请稍后重试" }
             val cacheKey = "amap:${sha256(key.toByteArray())}:${point.coordinateKey()}"
             cached(cacheKey)?.let { return it }
             return amapClient().reverse(point).also { cache.edit().putString(cacheKey, it.json().toString()).apply() }
@@ -102,7 +102,7 @@ class PlaceService(context: Context) : PlaceLookup {
         val region = PlaceRegion.resolve(requested, identified)
         if (region.provider == PlaceProvider.GOOGLE) return googleClient().search(query, identified)
         val key = withContext(Dispatchers.IO) { settings.loadAmapKey() }
-        require(validAmapKey(key)) { "请先在设置中保存高德 Web服务 Key" }
+        require(validAmapKey(key)) { "地点服务暂不可用，请稍后重试" }
         val inheritedCity = identified?.takeIf { PlaceRegion.fromPoint(it) == PlaceRegion.MAINLAND }?.city.orEmpty()
         val area = if (region == PlaceRegion.MAINLAND) city.trim().ifBlank { inheritedCity } else ""
         val cacheKey = sha256("amap-v2|$key|${region.name}|$area|${identified?.coordinateKey()}|${query.trim()}".toByteArray(Charsets.UTF_8))

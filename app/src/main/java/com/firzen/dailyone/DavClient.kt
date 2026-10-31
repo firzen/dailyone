@@ -38,15 +38,17 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
         return client.newCall(b.method(method, body).build()).execute()
     }
     fun ensureCollections() {
-        listOf("", "entries/", "photos/").forEach { path ->
+        listOf("", "entries/", "photos/", "notebooks/").forEach { path ->
             request("MKCOL", path).use { r ->
                 if (r.code !in listOf(201, 405)) fail(r.code)
             }
         }
     }
-    fun listEntries(): Map<String, String> {
+    fun listEntries(): Map<String, String> = listDocuments("entries")
+    fun listNotebooks(): Map<String, String> = listDocuments("notebooks")
+    private fun listDocuments(collection: String): Map<String, String> {
         val xml = """<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"""
-        val bytes = request("PROPFIND", "entries/", xml.toByteArray(), mapOf("Depth" to "1", "Content-Type" to "application/xml")).use { r ->
+        val bytes = request("PROPFIND", "$collection/", xml.toByteArray(), mapOf("Depth" to "1", "Content-Type" to "application/xml")).use { r ->
             if (r.code != 207) fail(r.code)
             bounded(r, 8 * 1024 * 1024)
         }
@@ -95,6 +97,20 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
             r.header("ETag")?.takeUnless { it.startsWith("W/") }
         }
     }
+    fun getNotebook(id: String): Notebook = request("GET", "notebooks/$id.json").use { r ->
+        if (!r.isSuccessful) fail(r.code)
+        val tag = r.header("ETag")
+        require(!tag.isNullOrBlank() && !tag.startsWith("W/")) { "日记本需要强 ETag" }
+        Notebook.parse(String(bounded(r, 65536), Charsets.UTF_8), tag).also { require(it.id == id) }
+    }
+    fun putNotebook(book: Notebook): String {
+        val condition = book.etag?.let { mapOf("If-Match" to it) } ?: mapOf("If-None-Match" to "*")
+        return request("PUT", "notebooks/${book.id}.json", book.json().toByteArray(Charsets.UTF_8), condition + ("Content-Type" to "application/json; charset=utf-8")).use { r ->
+            if (r.code == 412) throw IOException("日记本刚被修改，请再次同步")
+            if (!r.isSuccessful) fail(r.code)
+            requireNotNull(r.header("ETag")?.takeIf { it.isNotBlank() && !it.startsWith("W/") }) { "日记本写入后未提供强 ETag" }
+        }
+    }
     fun putPhoto(name: String, data: ByteArray) {
         require(validPhoto(name))
         request("PUT", "photos/$name", data, mapOf("If-None-Match" to "*", "Content-Type" to "image/jpeg")).use { r ->
@@ -105,6 +121,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
         require(validPhoto(name))
         val mime = when (name.substringAfterLast('.')) {
             "jpg", "jpeg" -> "image/jpeg"; "png" -> "image/png"; "webp" -> "image/webp"
+            "mp4", "m4v" -> "video/mp4"; "mov" -> "video/quicktime"; "webm" -> "video/webm"
             "heic", "heif" -> "image/heic"; "gif" -> "image/gif"; "avif" -> "image/avif"
             else -> "application/octet-stream"
         }

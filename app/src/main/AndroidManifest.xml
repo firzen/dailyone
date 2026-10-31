@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <application android:label="DailyOne" android:icon="@drawable/ic_launcher"
+    <application android:label="DailyOne" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.DailyOne" android:allowBackup="false"
         android:supportsRtl="true" android:usesCleartextTraffic="false">
         <meta-data android:name="com.google.android.geo.API_KEY" android:value="${googleMapsApiKey}" />

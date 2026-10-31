@@ -17,6 +17,71 @@ import kotlinx.coroutines.withContext
 
 class JournalViewModel(app: Application) : AndroidViewModel(app) {
     val store = JournalStore(app)
+    val notebooks = store.notebooks
+    var selectedNotebook by mutableStateOf<String?>(null)
+    var importPlan by mutableStateOf<DayOnePlan?>(null); private set
+    var importStatus by mutableStateOf(""); private set
+    var importResult by mutableStateOf<String?>(null); private set
+    private val dayOne = DayOneImporter(store, java.io.File(app.filesDir, "imports"))
+    fun previewDayOne(uri: Uri) {
+        if (busy || importing || loading || draft != null || scanProgress.running || geoProgress.running || shopProgress.running) return
+        busy = true
+        viewModelScope.launch {
+            try {
+                getApplication<Application>().contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                importPlan = dayOne.preview(TreeNode.root(getApplication(), uri))
+            } catch (e: Exception) { events.send(e.message ?: "导入预检失败") }
+            finally { busy = false }
+        }
+    }
+    fun dismissImport() { importPlan = null; importResult = null }
+    fun executeDayOne() {
+        val plan = importPlan ?: return
+        if (busy || importing) return
+        importPlan = null; busy = true; importing = true; importStatus = "正在导入…"
+        viewModelScope.launch {
+            try {
+                val count = dayOne.execute(plan) { done, total -> viewModelScope.launch { importStatus = "正在复制媒体 $done/$total" } }
+                importResult = "导入完成：新增 $count 篇日记。" + plan.summary
+            } catch (e: Exception) { importResult = "导入失败，未写入的日记可重试：${e.message}" }
+            finally { busy = false; importing = false; importStatus = "" }
+        }
+    }
+    fun saveNotebook(name: String, id: String? = null) {
+        if (busy || importing) return
+        viewModelScope.launch {
+            try {
+                val previous = notebooks.value.firstOrNull { it.id == id }
+                val book = previous?.copy(name = name.trim(), updatedAt = System.currentTimeMillis(), dirty = true) ?: Notebook(name = name.trim())
+                store.saveNotebook(book); selectedNotebook = book.id
+            } catch (e: Exception) { events.send(e.message ?: "日记本保存失败") }
+        }
+    }
+    fun addVideos(uris: List<Uri>) {
+        val original = draft ?: return
+        if (importing || uris.isEmpty()) return
+        importing = true
+        viewModelScope.launch {
+            try {
+                for (uri in uris) {
+                    val name = withContext(Dispatchers.IO) {
+                        val mime = getApplication<Application>().contentResolver.getType(uri)
+                        val ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime ?: "")?.lowercase() ?: "mp4"
+                        val name = "${UUID.randomUUID()}.$ext"
+                        require(validVideo(name)) { "不支持的视频格式" }
+                        val file = java.io.File(store.mediaDir, name)
+                        try {
+                            getApplication<Application>().contentResolver.openInputStream(uri).use { input -> requireNotNull(input).use { file.outputStream().use { output -> it.copyTo(output) } } }
+                            require(file.length() > 0) { "视频为空" }
+                        } catch (e: Exception) { file.delete(); throw e }
+                        name
+                    }
+                    draft?.takeIf { it.id == original.id }?.let { change(it.copy(videos = it.videos + name, mediaOrder = it.attachments + name)) }
+                }
+            } catch (e: Exception) { events.send(e.message ?: "视频添加失败") }
+            finally { importing = false }
+        }
+    }
     private val settings = CloudSettings(app)
     private val preferences = app.getSharedPreferences("journal_preferences", android.content.Context.MODE_PRIVATE)
     var photoTimePreference by mutableStateOf(runCatching {
@@ -157,7 +222,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     private var shopRefresh: JournalShopRefresh? = null
     fun startShopRefresh() {
         if (loading || busy || scanProgress.running || geoProgress.running || shopProgress.running) return
-        if (!validAmapKey(amapKey)) { events.trySend("请先保存高德 Web服务 Key"); return }
+        if (!validAmapKey(amapKey)) { events.trySend("地点服务暂不可用，请稍后重试"); return }
         val worker = JournalShopRefresh(store, places::refreshShop)
         shopRefresh = worker; shopProgress = ShopRefreshProgress(running = true)
         viewModelScope.launch {
@@ -306,12 +371,12 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) { events.send(e.message ?: "操作失败") }
         }
     }
-    fun batch(ids: Set<String>, merge: Boolean, done: () -> Unit) {
+    fun batch(ids: Set<String>, merge: Boolean, notebookId: String? = null, done: () -> Unit) {
         if (busy || loading) return
         busy = true
         viewModelScope.launch {
             try {
-                val action = store.batch(ids, merge)
+                val action = store.batch(ids, merge, notebookId)
                 val token = UUID.randomUUID().toString()
                 if (undoActions.size >= 32) undoActions.remove(undoActions.keys.first())
                 undoActions[token] = action
@@ -345,12 +410,12 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() { scanner?.stop?.set(true); geoBackfill?.stop?.set(true); shopRefresh?.stop?.set(true); super.onCleared() }
     init {
         viewModelScope.launch {
-            try { store.load(); config = withContext(Dispatchers.IO) { settings.load() }; amapKey = withContext(Dispatchers.IO) { mapSettings.loadAmapKey() }; amapAndroidKey = withContext(Dispatchers.IO) { mapSettings.loadAndroidKey() }; googleKey = withContext(Dispatchers.IO) { mapSettings.loadGoogleKey() } }
+            try { store.load(); dayOne.repairImportedText(); config = withContext(Dispatchers.IO) { settings.load() }; amapKey = withContext(Dispatchers.IO) { mapSettings.loadAmapKey() }; amapAndroidKey = withContext(Dispatchers.IO) { mapSettings.loadAndroidKey() }; googleKey = withContext(Dispatchers.IO) { mapSettings.loadGoogleKey() } }
             catch (e: Exception) { events.send("读取数据失败：${e.message}") }
             finally { loading = false }
         }
     }
-    fun open(entry: Entry = Entry()) { if (!busy && !loading) { draft = entry; editingId.set(entry.id); saved = true; resolveEntryPlace(entry) } }
+    fun open(entry: Entry = Entry(notebookId = selectedNotebook ?: DEFAULT_NOTEBOOK)) { if (!busy && !loading) { draft = entry; editingId.set(entry.id); saved = true; resolveEntryPlace(entry) } }
     fun change(entry: Entry) {
         val next = entry.copy(updatedAt = System.currentTimeMillis(), dirty = !entry.candidate)
         draft = next
@@ -392,7 +457,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                         val latest = draft
                         if (latest?.id == original.id) {
                             val location = withContext(Dispatchers.IO) { store.knownPhotoLocation(name) }
-                            change(latest.copy(photos = latest.photos + name,
+                            change(latest.copy(photos = latest.photos + name, mediaOrder = latest.attachments + name,
                                 photoLocations = location?.let { latest.photoLocations + (name to it) } ?: latest.photoLocations))
                         }
                     } catch (e: Exception) { events.send("有一张图片添加失败：${e.message}") }

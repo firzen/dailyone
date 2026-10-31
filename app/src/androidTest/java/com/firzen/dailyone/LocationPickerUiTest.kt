@@ -88,7 +88,7 @@ class LocationPickerUiTest {
         var saved: GeoPoint? = null
         compose.setContent { MaterialTheme { LocationPicker(null, overseas, emptyList(), false, false, null,
             {}, {}, { saved = it }, {}, distanceCenter = overseas, googleConfigured = false) } }
-        compose.onNodeWithText("Google 地图 Key 尚未配置，请配置后更新安装包").assertExists()
+        compose.onNodeWithText("Google 地图暂不可用，可尝试切换地图服务").assertExists()
         compose.onNodeWithText("使用此位置").performClick()
         compose.runOnIdle { assertEquals(overseas.copy(nameOrigin = PlaceNameOrigin.POI), saved) }
     }

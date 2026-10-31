@@ -34,7 +34,7 @@ import kotlin.math.abs
             TextureMapView(context).apply { onCreate(null) }
         }.getOrNull()
     }
-    if (view == null) { Box(modifier, contentAlignment = Alignment.Center) { Text("地图加载失败，请检查 Android平台 Key") }; return }
+    if (view == null) { Box(modifier, contentAlignment = Alignment.Center) { Text("地图加载失败，请稍后重试") }; return }
     DisposableEffect(view, lifecycle) {
         val map = view.map
         map.uiSettings.isZoomControlsEnabled = false

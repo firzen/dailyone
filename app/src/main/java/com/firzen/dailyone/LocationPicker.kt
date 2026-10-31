@@ -95,14 +95,14 @@ import androidx.compose.ui.window.DialogProperties
                     key(provider, mapGeneration) { when {
                         resolvingMap && mapCenter == null -> Text("正在加载地图…", Modifier.align(Alignment.Center), fontSize = 13.sp)
                         mapProvider == PlaceProvider.GOOGLE -> {
-                            if (!googleConfigured) Text("Google 地图 Key 尚未配置，请配置后更新安装包", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
+                            if (!googleConfigured) Text("Google 地图暂不可用，可尝试切换地图服务", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
                             else {
                                 GoogleMapPanel((results.firstOrNull() ?: mapCenter)?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 },
                                     { point -> selected = null; name = ""; query = ""; userSelected = true; moveMap(point) }, Modifier.fillMaxSize())
                                 Icon(Icons.Outlined.LocationOn, "地图中心选点", Modifier.align(Alignment.Center).size(38.dp).offset(y = (-18).dp), tint = MaterialTheme.colorScheme.primary)
                             }
                         }
-                        androidKey.isBlank() -> Text("在设置中填写高德 Android平台 Key 后显示地图", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
+                        androidKey.isBlank() -> Text("高德地图暂不可用，请稍后重试", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
                         !privacyAgreed -> Column(Modifier.align(Alignment.Center).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("地图由高德提供，用于浏览地图和拖动选点。启用前请阅读高德隐私政策。", fontSize = 13.sp)
                             TextButton(onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://lbs.amap.com/pages/privacy/"))) } }) { Text("高德隐私政策") }

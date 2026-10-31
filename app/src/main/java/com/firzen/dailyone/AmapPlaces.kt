@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 
 internal class AmapPlaces(private val key: String, private val client: OkHttpClient = defaultClient,
     private val base: HttpUrl = "https://restapi.amap.com/".toHttpUrl(), private val gate: PlaceSearchGate = sharedGate) {
-    init { require(validAmapKey(key)) { "请先在设置中保存高德 Web服务 Key" } }
+    init { require(validAmapKey(key)) { "地点服务暂不可用，请稍后重试" } }
     suspend fun search(query: String, region: PlaceRegion, city: String, near: GeoPoint? = null): List<GeoPoint> {
         require(query.isNotBlank()) { "请输入地点名称或地址" }
         require(region != PlaceRegion.AUTO && region.provider == PlaceProvider.AMAP)
@@ -157,9 +157,9 @@ internal class AmapPlaces(private val key: String, private val client: OkHttpCli
                 countryCode = country(text(it, "adcode"), text(it, "pname"), city, region.countryCode))
         }.getOrNull() }
         internal fun errorMessage(code: String): String = when (code) {
-            "10001", "10009", "10013" -> "高德 Key 无效或已失效，请检查设置"
-            "10005", "10006", "10007", "10008", "10012" -> "高德 Key 权限或平台不匹配，请使用已开通服务的 Web服务 Key"
-            "10003", "10004", "10010", "10014", "10019", "10020", "10021", "10044" -> "高德调用额度或频率已受限，请稍后重试或检查控制台"
+            "10001", "10009", "10013" -> "高德地点服务暂不可用，请稍后重试"
+            "10005", "10006", "10007", "10008", "10012" -> "高德地点服务暂未获授权，请稍后重试"
+            "10003", "10004", "10010", "10014", "10019", "10020", "10021", "10044" -> "高德地点服务繁忙，请稍后重试"
             else -> "高德暂时无法完成请求（${code.takeIf { it.all(Char::isDigit) && it.length == 5 } ?: "未知错误"}）"
         }
     }

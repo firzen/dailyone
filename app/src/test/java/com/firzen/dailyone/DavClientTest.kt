@@ -28,11 +28,30 @@ class DavClientTest {
     }
     @After fun tearDown() { server.shutdown() }
     @Test fun collectionsAreCreatedUnderChosenDirectory() {
-        repeat(3) { server.enqueue(MockResponse().setResponseCode(201)) }
+        repeat(4) { server.enqueue(MockResponse().setResponseCode(201)) }
         dav.ensureCollections()
         assertEquals("/dav/DailyOne/", server.takeRequest().path)
         assertEquals("/dav/DailyOne/entries/", server.takeRequest().path)
         assertEquals("/dav/DailyOne/photos/", server.takeRequest().path)
+        assertEquals("/dav/DailyOne/notebooks/", server.takeRequest().path)
+    }
+    @Test fun notebookWritesUseConditionalEtagsAndVideoStreamsKeepMime() {
+        val book = Notebook(id = id, name = "宝宝", etag = "\"old\"")
+        server.enqueue(MockResponse().setResponseCode(204).setHeader("ETag", "\"new\""))
+        assertEquals("\"new\"", dav.putNotebook(book))
+        val write = server.takeRequest()
+        assertEquals("/dav/DailyOne/notebooks/$id.json", write.path)
+        assertEquals("\"old\"", write.getHeader("If-Match"))
+        val file = java.io.File.createTempFile("video-fixture", ".mov")
+        try {
+            file.writeText("original video bytes")
+            server.enqueue(MockResponse().setResponseCode(201))
+            dav.putPhoto("$id.mov", file)
+            val video = server.takeRequest()
+            assertEquals("video/quicktime", video.getHeader("Content-Type"))
+            assertEquals("original video bytes", video.body.readUtf8())
+            assertEquals("*", video.getHeader("If-None-Match"))
+        } finally { file.delete() }
     }
     @Test fun newEntryNeverOverwritesExistingRemoteRecord() {
         server.enqueue(MockResponse().setResponseCode(412))

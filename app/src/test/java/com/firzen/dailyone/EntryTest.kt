@@ -30,7 +30,7 @@ class EntryTest {
         assertFalse(validPhoto("../../secret.jpg"))
     }
     @Test fun futureFormatsAreRejected() {
-        val json = Entry().json().replace("\"version\":1", "\"version\":99")
+        val json = org.json.JSONObject(Entry().json()).put("version", 99).toString()
         assertThrows(IllegalArgumentException::class.java) { Entry.parse(json) }
     }
 }

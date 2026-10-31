@@ -63,10 +63,10 @@ class AmapPlacesTest {
         assertEquals("/v3/geocode/regeo", server.takeRequest().requestUrl?.encodedPath)
         assertEquals(1, server.requestCount)
     }
-    @Test fun providerErrorsExplainKeyPlatformWithoutLeakingCredentials() = runBlocking {
+    @Test fun providerErrorsHideSetupDetailsAndCredentials() = runBlocking {
         server.enqueue(MockResponse().setBody("""{"status":"0","infocode":"10008","info":"$dummy"}"""))
         try { amap.search("地点", PlaceRegion.MAINLAND, "广州"); fail("Expected key error") }
-        catch (e: IOException) { assertTrue(e.message!!.contains("Web服务")); assertFalse(e.message!!.contains(dummy)) }
+        catch (e: IOException) { assertTrue(e.message!!.contains("暂未获授权")); assertFalse(e.message!!.contains("Key")); assertFalse(e.message!!.contains(dummy)) }
     }
     @Test fun shopRefreshUsesNearbyBusinessesWithoutMovingGps() = runBlocking {
         server.enqueue(MockResponse().setBody("""{"status":"1","locations":"113.305,23.097"}"""))

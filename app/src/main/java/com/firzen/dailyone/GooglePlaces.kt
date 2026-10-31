@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 class GooglePlaces(private val key: String, private val client: OkHttpClient = defaultClient,
     private val placesBase: HttpUrl = "https://places.googleapis.com/".toHttpUrl(),
     private val geocodingBase: HttpUrl = "https://maps.googleapis.com/".toHttpUrl()) {
-    init { require(validGoogleKey(key)) { "请填写有效的 Google 地点服务 Key" } }
+    init { require(validGoogleKey(key)) { "地点服务暂不可用，请稍后重试" } }
     suspend fun search(query: String, near: GeoPoint?, includeAmapRegions: Boolean = false): List<GeoPoint> {
         val body = JSONObject().put("textQuery", query.trim()).put("languageCode", "zh-CN").put("pageSize", 20)
         val center = near?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 && (includeAmapRegions || PlaceRegion.fromPoint(it)?.provider != PlaceProvider.AMAP) }
@@ -40,7 +40,7 @@ class GooglePlaces(private val key: String, private val client: OkHttpClient = d
         when (root.optString("status")) {
             "ZERO_RESULTS" -> return null
             "OK" -> Unit
-            "REQUEST_DENIED" -> throw IOException("Google 地址服务未获授权，请检查 Geocoding API、Key 限制和结算设置")
+            "REQUEST_DENIED" -> throw IOException("Google 地址服务暂未获授权，请稍后重试")
             "OVER_QUERY_LIMIT", "OVER_DAILY_LIMIT" -> throw IOException("Google 地址服务额度或调用频率受限")
             else -> throw IOException("Google 暂时无法解析地址，请稍后重试")
         }
@@ -63,8 +63,8 @@ class GooglePlaces(private val key: String, private val client: OkHttpClient = d
         return response.use {
             withContext(Dispatchers.IO) {
                 if (!it.isSuccessful) throw IOException(when (it.code) {
-                    400 -> "Google 请求参数或 Key 无效，请检查地点服务设置"
-                    401, 403 -> "Google 地点服务未获授权，请检查 Places API (New)、Key 限制和结算设置"
+                    400 -> "Google 地点服务暂不可用，请稍后重试"
+                    401, 403 -> "Google 地点服务暂未获授权，请稍后重试"
                     429 -> "Google 地点服务额度或调用频率受限，请稍后重试"
                     else -> "Google 地点服务暂时不可用，请稍后重试"
                 })

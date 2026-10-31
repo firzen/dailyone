@@ -1,7 +1,7 @@
 package com.firzen.dailyone
 
 /** Builds an atomic before/after plan; the earliest known journal remains the merged record. */
-fun journalBatch(entries: List<Entry>, merge: Boolean, now: Long = System.currentTimeMillis()): List<Pair<Entry, Entry>> {
+fun journalBatch(entries: List<Entry>, merge: Boolean, now: Long = System.currentTimeMillis(), targetNotebook: String? = null): List<Pair<Entry, Entry>> {
     require(entries.isNotEmpty() && entries.map { it.id }.distinct().size == entries.size && entries.none { it.deleted }) { "请选择有效日记" }
     if (!merge) return entries.map { it to it.copy(deleted = true, dirty = !it.candidate, updatedAt = now) }
     require(entries.size > 1) { "至少选择两篇日记才能合并" }
@@ -11,7 +11,8 @@ fun journalBatch(entries: List<Entry>, merge: Boolean, now: Long = System.curren
     val body = sorted.mapIndexed { index, entry ->
         (if (index == 0) listOf(entry.body) else listOf(entry.title, entry.body)).filter { it.isNotBlank() }.joinToString("\n")
     }.filter { it.isNotBlank() }.joinToString("\n\n")
-    val merged = first.copy(body = body, photos = sorted.flatMap { it.photos }.distinct(), candidate = candidate,
+    require(sorted.map { it.notebookId }.distinct().size == 1 || targetNotebook != null) { "请选择合并后的日记本" }
+    val merged = first.copy(body = body, notebookId = targetNotebook ?: first.notebookId, videos = sorted.flatMap { it.videos }.distinct(), mediaOrder = sorted.flatMap { it.attachments }.distinct(), photos = sorted.flatMap { it.photos }.distinct(), candidate = candidate,
         scanDay = if (candidate) first.scanDay else null, updatedAt = now, dirty = !candidate,
         photoLocations = sorted.flatMap { it.photoLocations.entries }.associate { it.key to it.value },
         recordedLocation = sorted.firstNotNullOfOrNull { it.recordedLocation })

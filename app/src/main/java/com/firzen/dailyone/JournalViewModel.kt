@@ -38,7 +38,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     var scanProgress by mutableStateOf(ScanProgress()); private set
     private var scanner: PhotoScanner? = null
     private val editingId = AtomicReference<String?>(null)
-    private val undoActions = mutableMapOf<String, Pair<Entry, Entry>>()
+    private val undoActions = mutableMapOf<String, List<Pair<Entry, Entry>>>()
     fun photoPermissionDenied() { events.trySend("请允许照片访问权限后再开始扫描") }
     fun startScan() {
         if (scanProgress.running || loading || busy) return
@@ -57,16 +57,6 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         if (!scanProgress.running) return
         active.stop.set(true); scanProgress = scanProgress.copy(stopping = true)
     }
-    fun prepareSelection(entry: Entry, ready: (Entry) -> Unit) {
-        editingId.set(entry.id)
-        viewModelScope.launch {
-            store.lock.lock()
-            val latest = store.entries.value.find { it.id == entry.id }
-            store.lock.unlock()
-            if (latest != null && latest.candidate && !latest.deleted) ready(latest)
-        }
-    }
-    fun closeSelection() { editingId.set(draft?.id) }
     fun review(id: String, keep: Boolean, selected: List<String>? = null) {
         viewModelScope.launch {
             try {
@@ -74,16 +64,31 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                 if (draft?.id == id) draft = result.second.takeUnless { it.deleted }
                 editingId.set(draft?.id)
                 val token = UUID.randomUUID().toString()
-                if (undoActions.size >= 32) undoActions.remove(undoActions.keys.first()); undoActions[token] = result
+                if (undoActions.size >= 32) undoActions.remove(undoActions.keys.first()); undoActions[token] = listOf(result)
                 events.withUndo(if (keep) "已保留为正式日记" else "候选已删除，相册原图未删除", token)
             } catch (e: Exception) { events.send(e.message ?: "操作失败") }
+        }
+    }
+    fun batch(ids: Set<String>, merge: Boolean, done: () -> Unit) {
+        if (busy || loading) return
+        busy = true
+        viewModelScope.launch {
+            try {
+                val action = store.batch(ids, merge)
+                val token = UUID.randomUUID().toString()
+                if (undoActions.size >= 32) undoActions.remove(undoActions.keys.first())
+                undoActions[token] = action
+                done()
+                events.withUndo(if (merge) "已合并 ${action.size} 篇日记" else "已删除 ${action.size} 篇日记，相册原图保留", token)
+            } catch (e: Exception) { events.send(e.message ?: "批量操作失败") }
+            finally { busy = false }
         }
     }
     fun undo(token: String) {
         val action = undoActions.remove(token) ?: return
         viewModelScope.launch {
-            if (store.restoreIfUnchanged(action.first, action.second)) {
-                if (draft?.id == action.first.id) draft = action.first
+            if (store.restoreBatchIfUnchanged(action)) {
+                action.firstOrNull { it.first.id == draft?.id }?.let { draft = it.first }
             } else events.send("记录已被修改或同步，无法撤销这次操作")
         }
     }
@@ -95,7 +100,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             store.lock.lock(); store.lock.unlock()
             val actual = store.entries.value.find { it.id == before.id } ?: return@launch
             if (actual.photos == after.photos) {
-                val token = UUID.randomUUID().toString(); if (undoActions.size >= 32) undoActions.remove(undoActions.keys.first()); undoActions[token] = before to actual
+                val token = UUID.randomUUID().toString(); if (undoActions.size >= 32) undoActions.remove(undoActions.keys.first()); undoActions[token] = listOf(before to actual)
                 events.withUndo("已移除图片，相册原图未删除", token)
             }
         }
@@ -138,14 +143,11 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     fun addPhotos(uris: List<Uri>) {
         val original = draft ?: return
         if (uris.isEmpty() || importing) return
-        val available = 20 - original.photos.size
-        if (available <= 0) { events.trySend("每篇日记最多 20 张图片"); return }
-        if (uris.size > available) events.trySend("每篇最多 20 张图片，本次添加前 $available 张")
         importing = true
         viewModelScope.launch {
             var firstTime: Long? = null
             try {
-                for (uri in uris.take(available)) {
+                for (uri in uris) {
                     try {
                         val timestamp = store.photoTime(uri)
                         val name = store.importPhoto(uri)

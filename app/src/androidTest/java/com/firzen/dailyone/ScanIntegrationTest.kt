@@ -102,6 +102,25 @@ class ScanIntegrationTest {
         val resumed = PhotoScanner(context, store, { inputs }, factory).run({ null }) {}
         assertEquals(1, resumed.skipped); assertEquals(3, store.entries.value.single().photos.size)
     }
+    @Test fun unlimitedCandidatesAndBatchMergeDeleteUndoPersistAtomically() = runBlocking {
+        store.load()
+        val first = Entry(createdAt = 100, body = "第一篇", photos = List(35) { photo() })
+        val second = Entry(createdAt = 200, candidate = true, scanDay = "2024-01-01", photos = List(30) { photo() }, dirty = false)
+        store.save(first); store.save(second)
+        val merged = store.batch(setOf(first.id, second.id), true)
+        assertEquals(65, store.entries.value.first { it.id == first.id }.photos.size)
+        assertTrue(store.entries.value.first { it.id == second.id }.deleted)
+        assertTrue(store.restoreBatchIfUnchanged(merged))
+        assertEquals(35, store.entries.value.first { it.id == first.id }.photos.size)
+        val deleted = store.batch(setOf(first.id, second.id), false)
+        assertTrue(store.entries.value.all { it.deleted })
+        assertTrue(store.restoreBatchIfUnchanged(deleted))
+        assertTrue(store.entries.value.none { it.deleted })
+        val again = store.batch(setOf(first.id, second.id), true)
+        store.save(again.first().second.copy(body = "后续编辑"))
+        assertFalse(store.restoreBatchIfUnchanged(again))
+        assertEquals("后续编辑", store.entries.value.first { it.id == first.id }.body)
+    }
     @Test fun bundledDetectorRecognizesPersonAndRejectsBlankImage() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val person = instrumentation.context.assets.open("person.jpg").use {

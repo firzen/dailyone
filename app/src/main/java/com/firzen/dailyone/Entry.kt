@@ -35,7 +35,6 @@ data class Entry(
             val id = o.getString("id")
             require(validId(id)) { "无效日记编号" }
             val array = o.getJSONArray("photos")
-            require(candidate || array.length() <= 20) { "图片数量超限" }
             val photos = (0 until array.length()).map { array.getString(it) }
             require(photos.all(::validPhoto)) { "无效图片名称" }
             return Entry(id, o.getLong("createdAt"), o.getLong("updatedAt"),

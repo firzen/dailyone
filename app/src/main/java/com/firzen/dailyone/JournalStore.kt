@@ -86,10 +86,26 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
             before to next
         }
     }
-    suspend fun restoreIfUnchanged(before: Entry, after: Entry): Boolean = lock.withLock { withContext(Dispatchers.IO) {
-        if (get(after.id) != after) return@withContext false
-        write(before); true
+    suspend fun restoreIfUnchanged(before: Entry, after: Entry): Boolean = restoreBatchIfUnchanged(listOf(before to after))
+    suspend fun restoreBatchIfUnchanged(actions: List<Pair<Entry, Entry>>): Boolean = lock.withLock { withContext(Dispatchers.IO) {
+        if (actions.any { get(it.second.id) != it.second }) return@withContext false
+        transactionWrite(actions.map { it.first }); true
     } }
+    suspend fun batch(ids: Set<String>, merge: Boolean): List<Pair<Entry, Entry>> = lock.withLock { withContext(Dispatchers.IO) {
+        val selected = ids.mapNotNull { get(it)?.takeUnless { entry -> entry.deleted } }
+        require(selected.size == ids.size) { "所选日记已变化，请重新选择" }
+        val action = journalBatch(selected, merge)
+        transactionWrite(action.map { it.second }); action
+    } }
+    private fun transactionWrite(records: List<Entry>) {
+        writableDatabase.beginTransaction()
+        try {
+            records.forEach(::persist)
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+        val replaced = records.associateBy { it.id }
+        entries.value = (entries.value.filterNot { it.id in replaced } + records).sortedByDescending { it.createdAt }
+    }
     suspend fun save(entry: Entry) = lock.withLock { withContext(Dispatchers.IO) { write(entry) } }
     suspend fun resetSyncBaseline() = lock.withLock { withContext(Dispatchers.IO) {
         writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL")

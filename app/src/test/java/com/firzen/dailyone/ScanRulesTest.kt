@@ -30,10 +30,10 @@ class ScanRulesTest {
         assertEquals(entry.photos, kept.photos); assertEquals(entry.body, kept.body)
         assertNull(kept.scanDay); assertEquals(entry.createdAt, kept.createdAt)
     }
-    @Test fun overflowNeedsExplicitSelectionAndCannotIntroduceForeignPhotos() {
+    @Test fun unlimitedPhotosAreRetainedAndForeignPhotosAreRejected() {
         val entry = Entry(candidate = true, scanDay = "2024-01-01", photos = List(25) { photo() })
-        assertThrows(IllegalArgumentException::class.java) { reviewCandidate(entry, true) }
-        assertEquals(20, reviewCandidate(entry, true, entry.photos.take(20)).photos.size)
+        assertEquals(25, reviewCandidate(entry, true).photos.size)
+        assertEquals(entry.photos, Entry.parse(reviewCandidate(entry, true).json()).photos)
         assertThrows(IllegalArgumentException::class.java) { reviewCandidate(entry, true, listOf(photo())) }
         assertThrows(IllegalArgumentException::class.java) { reviewCandidate(entry, true, emptyList()) }
     }
@@ -42,11 +42,11 @@ class ScanRulesTest {
         assertThrows(IllegalArgumentException::class.java) { reviewCandidate(entry, true) }
         assertTrue(reviewCandidate(entry, false).deleted)
     }
-    @Test fun candidateMetadataIsLocalAndRemoteReadersRetainTheirPhotoLimit() {
+    @Test fun candidateMetadataIsLocalWhilePhotoCountsAreUnlimited() {
         val entry = Entry(candidate = true, scanDay = "2024-01-01", photos = List(25) { photo() })
         assertFalse(entry.json().contains("candidate")); assertFalse(entry.json().contains("scanDay"))
         assertEquals(entry.photos, Entry.parse(entry.json(), candidate = true, scanDay = entry.scanDay).photos)
-        assertThrows(IllegalArgumentException::class.java) { Entry.parse(entry.json()) }
+        assertEquals(entry.photos, Entry.parse(entry.json()).photos)
     }
     @Test fun formalRecordsCannotBeProcessedByCandidateGestures() {
         assertThrows(IllegalArgumentException::class.java) { reviewCandidate(Entry(photos = listOf(photo())), false) }

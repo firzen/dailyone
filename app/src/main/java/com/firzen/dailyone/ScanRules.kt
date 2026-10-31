@@ -10,7 +10,7 @@ fun reviewCandidate(entry: Entry, keep: Boolean, selected: List<String>? = null)
     require(entry.candidate && !entry.deleted)
     val photos = selected ?: entry.photos
     if (keep) {
-        require((photos.isNotEmpty() || entry.title.isNotBlank() || entry.body.isNotBlank()) && photos.size <= 20 && photos.distinct().size == photos.size && photos.all { it in entry.photos }) { "请保留日记内容，图片最多 20 张" }
+        require((photos.isNotEmpty() || entry.title.isNotBlank() || entry.body.isNotBlank()) && photos.distinct().size == photos.size && photos.all { it in entry.photos }) { "请保留日记内容" }
         require(entry.scanDay != "unknown") { "请先在编辑页确认日记日期" }
     }
     return entry.copy(candidate = !keep, scanDay = if (keep) null else entry.scanDay,

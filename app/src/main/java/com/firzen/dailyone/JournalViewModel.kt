@@ -61,17 +61,23 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             if (saved) draft = null
         }
     }
-    fun addPhoto(uri: Uri) {
+    fun addPhotos(uris: List<Uri>) {
         val original = draft ?: return
-        if (importing || original.photos.size >= 20) { events.trySend("每篇日记最多 20 张图片"); return }
+        if (uris.isEmpty() || importing) return
+        val available = 20 - original.photos.size
+        if (available <= 0) { events.trySend("每篇日记最多 20 张图片"); return }
+        if (uris.size > available) events.trySend("每篇最多 20 张图片，本次添加前 $available 张")
         importing = true
         viewModelScope.launch {
             try {
-                val name = store.importPhoto(uri)
-                val latest = draft
-                if (latest?.id == original.id) change(latest.copy(photos = latest.photos + name))
-            } catch (e: Exception) { events.send("添加图片失败：${e.message}") }
-            finally { importing = false }
+                for (uri in uris.take(available)) {
+                    try {
+                        val name = store.importPhoto(uri)
+                        val latest = draft
+                        if (latest?.id == original.id) change(latest.copy(photos = latest.photos + name))
+                    } catch (e: Exception) { events.send("有一张图片添加失败：${e.message}") }
+                }
+            } finally { importing = false }
         }
     }
     fun configure(value: CloudConfig, onSaved: () -> Unit) {

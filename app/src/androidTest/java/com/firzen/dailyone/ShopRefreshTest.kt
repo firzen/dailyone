@@ -51,4 +51,41 @@ class ShopRefreshTest {
             assertEquals(moved, store.get(first.id)?.location)
         } finally { store.close(); context.deleteDatabase("$key.db"); store.mediaDir.deleteRecursively() }
     }
+    /** Explicit task runner: invokes the same live ViewModel action as the settings button. */
+    @Test fun refreshLiveJournalsOnlyWhenExplicitlyRequested() {
+        org.junit.Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("refresh-live-journals") == "true")
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            lateinit var vm: JournalViewModel
+            scenario.onActivity { vm = androidx.lifecycle.ViewModelProvider(it)[JournalViewModel::class.java] }
+            val readyDeadline = android.os.SystemClock.elapsedRealtime() + 30_000
+            while (vm.loading && android.os.SystemClock.elapsedRealtime() < readyDeadline) Thread.sleep(100)
+            check(!vm.loading) { "Journal data did not finish loading" }
+            scenario.onActivity { vm.startShopRefresh() }
+            instrumentation.waitForIdleSync()
+            check(vm.shopProgress.running || vm.shopProgress.total > 0) { "Shop refresh did not start" }
+            var lastChecked = -1
+            val deadline = android.os.SystemClock.elapsedRealtime() + 20 * 60_000
+            while (vm.shopProgress.running) {
+                val state = vm.shopProgress
+                if (state.checked != lastChecked && (state.checked % 5 == 0 || lastChecked < 0)) {
+                    instrumentation.sendStatus(0, android.os.Bundle().apply {
+                        putString("shop_refresh_progress", "${state.checked}/${state.total}; updated=${state.updated}; shops=${state.withShop}; skipped=${state.missing}; failed=${state.failed}")
+                    })
+                    lastChecked = state.checked
+                }
+                if (android.os.SystemClock.elapsedRealtime() > deadline) {
+                    scenario.onActivity { vm.stopShopRefresh() }
+                    error("Shop refresh timed out; committed updates have been retained")
+                }
+                Thread.sleep(500)
+            }
+            val result = vm.shopProgress
+            instrumentation.sendStatus(0, android.os.Bundle().apply {
+                putString("shop_refresh_result", "checked=${result.checked}; total=${result.total}; updated=${result.updated}; shops=${result.withShop}; skipped=${result.missing}; failed=${result.failed}")
+            })
+            check(result.checked == result.total) { "Shop refresh stopped before all entries were checked" }
+        }
+    }
+
 }

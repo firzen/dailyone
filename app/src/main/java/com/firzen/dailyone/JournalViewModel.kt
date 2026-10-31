@@ -40,7 +40,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     private var geoBackfill: GeoBackfill? = null
     var geoProgress by mutableStateOf(GeoBackfillProgress()); private set
     fun startGeoBackfill() {
-        if (geoProgress.running || scanProgress.running || busy || loading) return
+        if (geoProgress.running || scanProgress.running || shopProgress.running || busy || loading) return
         val worker = GeoBackfill(getApplication(), store)
         geoBackfill = worker; geoProgress = GeoBackfillProgress(running = true)
         viewModelScope.launch {
@@ -53,14 +53,95 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun stopGeoBackfill() { geoBackfill?.stop?.set(true) }
-    var placeEndpoint by mutableStateOf(preferences.getString("place_search_endpoint", OpenMapSearch.DEFAULT_ENDPOINT) ?: OpenMapSearch.DEFAULT_ENDPOINT); private set
-    fun updatePlaceEndpoint(value: String): String? = try {
-        val normalized = OpenMapSearch.normalizedEndpoint(value)
-        preferences.edit().putString("place_search_endpoint", normalized).apply()
-        placeEndpoint = normalized
-        events.trySend("地点搜索设置已保存")
+    private val mapSettings = MapSettings(app)
+    var amapKey by mutableStateOf(""); private set
+    fun updateAmapKey(value: String): String? = try {
+        mapSettings.saveAmapKey(value)
+        amapKey = value.trim()
+        events.trySend("高德 Key 已保存")
         null
-    } catch (e: Exception) { e.message ?: "地点搜索服务器地址无效" }
+    } catch (e: Exception) { e.message ?: "高德 Key 保存失败" }
+    var amapAndroidKey by mutableStateOf(""); private set
+    var mapPrivacyAgreed by mutableStateOf(preferences.getBoolean("amap_map_privacy_v1", false)); private set
+    fun agreeMapPrivacy() { preferences.edit().putBoolean("amap_map_privacy_v1", true).apply(); mapPrivacyAgreed = true }
+    fun updateAndroidKey(value: String): String? = try {
+        mapSettings.saveAndroidKey(value); amapAndroidKey = value.trim(); events.trySend("高德地图 Key 已保存"); null
+    } catch (e: Exception) { e.message ?: "地图 Key 保存失败" }
+    var mapCenter by mutableStateOf<GeoPoint?>(null); private set
+    var mapAnchor by mutableStateOf<GeoPoint?>(null); private set
+    var mapPick by mutableStateOf<GeoPoint?>(null); private set
+    var nearbyPlaces by mutableStateOf<List<GeoPoint>>(emptyList()); private set
+    var resolvingMap by mutableStateOf(false); private set
+    private var mapJob: kotlinx.coroutines.Job? = null
+    private var mapRevision = 0
+    private var mapUserInteracted = false
+    fun userFocusMap(point: GeoPoint) { mapUserInteracted = true; focusMap(point) }
+    fun focusMap(point: GeoPoint, loadNearby: Boolean = false) {
+        val session = placeSession; val revision = ++mapRevision
+        mapJob?.cancel(); resolvingMap = false
+        mapJob = viewModelScope.launch {
+            try {
+                val mapped = places.mapCoordinate(point)
+                if (session != placeSession || revision != mapRevision) return@launch
+                mapCenter = mapped; mapAnchor = mapped
+                if (loadNearby) {
+                    val nearby = places.nearby(mapped)
+                    if (session == placeSession && revision == mapRevision) nearbyPlaces = nearby
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { if (session == placeSession && revision == mapRevision) placeError = e.message ?: "地图位置加载失败" }
+        }
+    }
+    fun prepareCurrentMap() {
+        mapUserInteracted = false; mapPick = null; placeResults = emptyList()
+        searchRevision++; searchJob?.cancel(); searchingPlaces = false
+        currentPlace?.let { focusMap(it, true) }
+    }
+    fun pickMapCenter(point: GeoPoint) {
+        mapUserInteracted = true; mapAnchor = point; placeResults = emptyList(); searchRevision++; searchJob?.cancel(); searchingPlaces = false
+        val session = placeSession; val revision = ++mapRevision
+        mapJob?.cancel(); mapPick = null; resolvingMap = true; placeError = null
+        mapJob = viewModelScope.launch {
+            try {
+                val named = places.reverse(point) ?: error("未找到该位置的地址")
+                check(PlaceRegion.fromPoint(named)?.provider == PlaceProvider.AMAP) { "该地区需要 Google 地图，后续接入" }
+                val nearby = places.nearby(named)
+                if (session == placeSession && revision == mapRevision) { mapPick = named; mapAnchor = named; nearbyPlaces = nearby; if (!cityWasEdited) searchCity = named.city }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { if (session == placeSession && revision == mapRevision) placeError = e.message ?: "选点地址解析失败" }
+            finally { if (session == placeSession && revision == mapRevision) resolvingMap = false }
+        }
+    }
+    var shopProgress by mutableStateOf(ShopRefreshProgress()); private set
+    private var shopRefresh: JournalShopRefresh? = null
+    fun startShopRefresh() {
+        if (loading || busy || scanProgress.running || geoProgress.running || shopProgress.running) return
+        if (!validAmapKey(amapKey)) { events.trySend("请先保存高德 Web服务 Key"); return }
+        val worker = JournalShopRefresh(store, places::refreshShop)
+        shopRefresh = worker; shopProgress = ShopRefreshProgress(running = true)
+        viewModelScope.launch {
+            try {
+                val result = worker.run { shopProgress = it.copy(running = true) }
+                draft = draft?.let { current ->
+                    val stored = store.get(current.id)
+                    current.copy(photoLocations = (current.photoLocations + stored?.photoLocations.orEmpty()).filterKeys { it in current.photos },
+                        recordedLocation = stored?.recordedLocation?.takeIf { updated -> current.recordedLocation?.let { live -> updated.sameCoordinates(live) && (live.nameOrigin != PlaceNameOrigin.CUSTOM || live.name == updated.name) } == true } ?: current.recordedLocation)
+                }
+                events.send("店铺更新${if (worker.stop.get()) "已停止" else "完成"}：更新 ${result.updated} 篇，找到店铺 ${result.withShop} 篇，跳过 ${result.missing} 篇，失败 ${result.failed} 篇")
+            } catch (e: Exception) { events.send(e.message ?: "店铺更新中断，已完成结果保留") }
+            finally { shopRefresh = null; shopProgress = shopProgress.copy(running = false) }
+        }
+    }
+    fun stopShopRefresh() { shopRefresh?.stop?.set(true) }
+    var searchRegion by mutableStateOf(PlaceRegion.AUTO); private set
+    var searchCity by mutableStateOf(""); private set
+    private var cityWasEdited = false
+    fun updateSearchRegion(value: PlaceRegion) {
+        searchRevision++; searchJob?.cancel(); searchingPlaces = false; placeResults = emptyList(); placeError = null
+        searchRegion = value
+        if (!cityWasEdited && value == PlaceRegion.MAINLAND) searchCity = currentPlace?.takeIf { PlaceRegion.fromPoint(it) == PlaceRegion.MAINLAND }?.city.orEmpty()
+    }
+    fun updateSearchCity(value: String) { searchCity = value; cityWasEdited = true }
     private val places by lazy { PlaceService(getApplication()) }
     var locationPickerOpen by mutableStateOf(false); private set
     var locating by mutableStateOf(false); private set
@@ -76,10 +157,13 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         if (draft == null) return
         locationPickerOpen = true; placeSession++; currentPlace = null
         placeResults = emptyList(); placeError = null
+        searchRegion = PlaceRegion.AUTO; searchCity = ""; cityWasEdited = false
+        mapCenter = null; mapAnchor = null; mapPick = null; nearbyPlaces = emptyList(); resolvingMap = false; mapUserInteracted = false
+        draft?.location?.let { focusMap(it, true) }
     }
     fun closeLocationPicker() {
         locationPickerOpen = false; placeSession++
-        searchJob?.cancel(); currentPlaceJob?.cancel(); searchingPlaces = false; locating = false
+        searchJob?.cancel(); currentPlaceJob?.cancel(); mapJob?.cancel(); mapRevision++; searchingPlaces = false; locating = false; resolvingMap = false
     }
     fun locationPermissionDenied() { placeError = "未允许定位，仍可搜索并选择地点" }
     fun recordCurrentLocation() {
@@ -93,7 +177,11 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                 if (session != placeSession) return@launch
                 currentPlace = point
                 val named = try { places.reverse(point) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
-                if (session == placeSession) currentPlace = named ?: point
+                if (session == placeSession) {
+                    currentPlace = named ?: point
+                    if (!cityWasEdited) searchCity = currentPlace?.takeIf { searchRegion == PlaceRegion.AUTO || PlaceRegion.fromPoint(it) == searchRegion }?.city.orEmpty()
+                    if (!mapUserInteracted) focusMap(currentPlace ?: point, true)
+                }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession) placeError = e.message ?: "获取当前位置失败" }
             finally { if (session == placeSession) locating = false }
@@ -107,10 +195,11 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         searchingPlaces = true; placeError = null; placeResults = emptyList()
         searchJob = viewModelScope.launch {
             try {
-                val results = places.search(query, currentPlace ?: draft?.location)
+                if (resolvingMap) mapJob?.join()
+                val results = places.search(query, mapAnchor ?: currentPlace ?: draft?.location, searchRegion, searchCity)
                 if (session == placeSession && revision == searchRevision) {
                     placeResults = results
-                    if (results.isEmpty()) placeError = "开放地图未收录或未找到该地点，请尝试完整名称、城市或详细地址"
+                    if (results.isEmpty()) placeError = "未找到该地点，请尝试完整名称、其他城市或详细地址"
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession && revision == searchRevision) placeError = e.message ?: "地点搜索失败，请重试" }
@@ -140,7 +229,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     private val undoActions = mutableMapOf<String, List<Pair<Entry, Entry>>>()
     fun photoPermissionDenied() { events.trySend("请允许照片访问权限后再开始扫描") }
     fun startScan() {
-        if (scanProgress.running || geoProgress.running || loading || busy) return
+        if (scanProgress.running || geoProgress.running || shopProgress.running || loading || busy) return
         val scan = PhotoScanner(getApplication(), store)
         scanner = scan; scanProgress = ScanProgress(running = true)
         viewModelScope.launch {
@@ -204,10 +293,10 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
-    override fun onCleared() { scanner?.stop?.set(true); geoBackfill?.stop?.set(true); super.onCleared() }
+    override fun onCleared() { scanner?.stop?.set(true); geoBackfill?.stop?.set(true); shopRefresh?.stop?.set(true); super.onCleared() }
     init {
         viewModelScope.launch {
-            try { store.load(); config = withContext(Dispatchers.IO) { settings.load() } }
+            try { store.load(); config = withContext(Dispatchers.IO) { settings.load() }; amapKey = withContext(Dispatchers.IO) { mapSettings.loadAmapKey() }; amapAndroidKey = withContext(Dispatchers.IO) { mapSettings.loadAndroidKey() } }
             catch (e: Exception) { events.send("读取数据失败：${e.message}") }
             finally { loading = false }
         }
@@ -283,7 +372,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun configure(value: CloudConfig, onSaved: () -> Unit) {
         if (busy) return
-        if (scanProgress.running || geoProgress.running) { settingsError = "请先停止扫描或原图恢复"; return }
+        if (scanProgress.running || geoProgress.running || shopProgress.running) { settingsError = "请先停止扫描或原图恢复"; return }
         busy = true
         settingsError = null
         viewModelScope.launch {
@@ -299,7 +388,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun sync() {
-        if (scanProgress.running || geoProgress.running) { events.trySend("请先停止扫描或定位补全，再同步云存储"); return }
+        if (scanProgress.running || geoProgress.running || shopProgress.running) { events.trySend("请先停止扫描或定位补全，再同步云存储"); return }
         if (busy || loading || pending > 0 || saveFailed) return
         if (config.url.isBlank()) { events.trySend("请先配置 WebDAV 云存储"); return }
         busy = true

@@ -31,4 +31,13 @@ class GeoPointTest {
         assertEquals("已记录位置", legacy.label())
     }
 
+    @Test fun coordinateSystemsRemainDistinctAndRoundTrip() {
+        val point = GeoPoint(22.3, 114.1, "店名", source = "AMap", coordinateSystem = CoordinateSystem.GCJ02, countryCode = "HK", city = "香港")
+        assertEquals(point, GeoPoint.parse(point.json()))
+        val gps = point.copy(coordinateSystem = CoordinateSystem.WGS84)
+        assertFalse(point.sameCoordinates(gps)); assertNotEquals(point.coordinateKey(), gps.coordinateKey())
+        val legacy = requireNotNull(GeoPoint.parse(JSONObject().put("latitude", 22.3).put("longitude", 114.1)))
+        assertEquals(CoordinateSystem.WGS84, legacy.coordinateSystem)
+    }
+
 }

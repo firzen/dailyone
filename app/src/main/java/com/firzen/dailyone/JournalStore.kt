@@ -118,11 +118,13 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         val latest = get(entry.id)
         val metadata = (latest?.photoLocations.orEmpty() + resolved.photoLocations).mapValues { (name, point) ->
             val stored = latest?.photoLocations?.get(name)
-            if (point.name.isBlank() && point.address.isBlank() && stored != null && point.sameCoordinates(stored)) stored else point
+            if (stored != null && point.sameCoordinates(stored)) stored else point
         }
         val manual = resolved.recordedLocation?.let { point ->
             val stored = latest?.recordedLocation
-            if (point.name.isBlank() && point.address.isBlank() && stored != null && point.sameCoordinates(stored)) stored else point
+            val automaticSnapshot = point.nameOrigin == PlaceNameOrigin.LEGACY || point.nameOrigin == PlaceNameOrigin.AUTO
+            val unchangedCustomName = point.nameOrigin == PlaceNameOrigin.CUSTOM && stored?.nameOrigin == PlaceNameOrigin.CUSTOM && point.name == stored.name && point.poiId == stored.poiId
+            if (stored != null && point.sameCoordinates(stored) && (automaticSnapshot && stored.nameOrigin != PlaceNameOrigin.LEGACY || unchangedCustomName || point.name.isBlank() && point.address.isBlank())) stored else point
         }
         write(resolved.copy(photoLocations = metadata.filterKeys { it in resolved.photos }, recordedLocation = manual))
     } }
@@ -214,6 +216,18 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         } finally { writableDatabase.endTransaction() }
         refresh()
         affected.size
+    } }
+    suspend fun refreshShopLocation(id: String, original: GeoPoint, fresh: GeoPoint): Boolean = lock.withLock { withContext(Dispatchers.IO) {
+        require(original.sameCoordinates(fresh)) { "店铺更新不能移动日记坐标" }
+        val latest = get(id)?.takeUnless { it.deleted } ?: return@withContext false
+        if (latest.location != original) return@withContext false
+        val next = if (latest.recordedLocation != null) {
+            val protectName = original.nameOrigin == PlaceNameOrigin.CUSTOM || original.nameOrigin == PlaceNameOrigin.LEGACY && original.name.isNotBlank()
+            val updated = if (protectName) fresh.copy(name = original.name, nameOrigin = PlaceNameOrigin.CUSTOM, poiId = original.poiId) else fresh
+            latest.copy(recordedLocation = updated)
+        } else latest.copy(photoLocations = latest.photoLocations.mapValues { (_, point) -> if (point.sameCoordinates(original)) fresh else point })
+        if (next == latest) return@withContext false
+        write(next.copy(updatedAt = System.currentTimeMillis(), dirty = !latest.candidate)); true
     } }
     suspend fun nameLocation(id: String, point: GeoPoint, named: GeoPoint) = lock.withLock { withContext(Dispatchers.IO) {
         require(point.sameCoordinates(named))

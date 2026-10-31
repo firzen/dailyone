@@ -17,7 +17,7 @@ class LocationPickerUiTest {
         compose.waitForIdle()
         compose.runOnIdle { assertNull(saved) }
         compose.onNodeWithText("使用此位置").performClick()
-        compose.runOnIdle { assertEquals(current, saved) }
+        compose.runOnIdle { assertEquals(current.copy(nameOrigin = PlaceNameOrigin.POI), saved) }
     }
     @Test fun selectedSearchResultSupportsCustomShopNameWithoutMovingIt() {
         val result = GeoPoint(24.0, 114.0, "河边咖啡", "测试路2号")
@@ -25,8 +25,10 @@ class LocationPickerUiTest {
         compose.setContent { MaterialTheme { LocationPicker(current, null, listOf(result), false, false, null,
             {}, {}, { saved = it }, {}) } }
         compose.onNodeWithText("河边咖啡").performScrollTo().performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(2)
+        compose.onNodeWithText("修改店名").performScrollTo().performClick()
         compose.onNodeWithText("地点名称 / 店名").performScrollTo().performTextReplacement("河边咖啡旗舰店")
         compose.onNodeWithText("使用此位置").performClick()
-        compose.runOnIdle { assertEquals(result.copy(name = "河边咖啡旗舰店"), saved) }
+        compose.runOnIdle { assertEquals(result.copy(name = "河边咖啡旗舰店", nameOrigin = PlaceNameOrigin.CUSTOM), saved) }
     }
 }

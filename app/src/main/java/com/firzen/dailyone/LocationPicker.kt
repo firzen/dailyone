@@ -1,88 +1,134 @@
 package com.firzen.dailyone
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.LocationOn
-import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 @Composable internal fun LocationPicker(current: GeoPoint?, existing: GeoPoint?, results: List<GeoPoint>,
     locating: Boolean, searching: Boolean, error: String?, search: (String) -> Unit,
-    retryCurrent: () -> Unit, select: (GeoPoint) -> Unit, close: () -> Unit) {
+    retryCurrent: () -> Unit, select: (GeoPoint) -> Unit, close: () -> Unit,
+    region: PlaceRegion = PlaceRegion.AUTO, city: String = "", changeRegion: (PlaceRegion) -> Unit = {}, changeCity: (String) -> Unit = {},
+    androidKey: String = "", privacyAgreed: Boolean = false, agreePrivacy: () -> Unit = {},
+    mapCenter: GeoPoint? = null, mapPick: GeoPoint? = null, nearby: List<GeoPoint> = emptyList(), resolvingMap: Boolean = false,
+    focusMap: (GeoPoint) -> Unit = {}, moveMap: (GeoPoint) -> Unit = {}, distanceCenter: GeoPoint? = null) {
+    val effectiveRegion = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(current ?: existing) else region
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
-    fun submit(query: String) { keyboard?.hide(); search(query) }
     var query by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf<GeoPoint?>(null) }
     var name by remember { mutableStateOf("") }
     var userSelected by remember { mutableStateOf(false) }
-    fun choose(point: GeoPoint) { selected = point; name = point.name.ifBlank { point.address }; userSelected = true }
-    LaunchedEffect(current) {
-        if (current != null && (!userSelected || (selected?.sameCoordinates(current) == true && name.isBlank()))) { selected = current; name = current.name.ifBlank { current.address } }
+    var editName by remember { mutableStateOf(false) }
+    fun choose(point: GeoPoint, focus: Boolean = true) {
+        selected = point; name = point.name.ifBlank { point.address }; userSelected = true
+        if (focus) focusMap(point)
     }
-    AlertDialog(onDismissRequest = close, title = { Text("选择位置") },
-        text = { Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(query, { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                label = { Text("搜索地点、店名或地址") }, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { submit(query) }), trailingIcon = {
-                    IconButton(onClick = { submit(query) }, enabled = !searching && query.isNotBlank()) { Icon(Icons.Outlined.Search, "搜索地点") }
-                })
-            Text("当前位置", fontWeight = FontWeight.Medium)
-            if (current != null) PlaceChoice(current, selected, "当前位置", { choose(current) })
-            if (locating) Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                Text(if (current == null) "正在获取当前位置…" else "正在解析地点名称…", Modifier.padding(start = 8.dp), fontSize = 13.sp)
+    LaunchedEffect(current) { if (current != null && !userSelected) { selected = current; name = current.name.ifBlank { current.address } } }
+    LaunchedEffect(mapPick) { if (mapPick != null) choose(mapPick, false) }
+    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Surface(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
+                Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = close) { Icon(Icons.Outlined.Close, "取消选择位置") }
+                    Text("选择位置", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Medium)
+                    TextButton(enabled = selected != null && name.isNotBlank() && !resolvingMap && effectiveRegion?.provider != PlaceProvider.GOOGLE, onClick = {
+                        selected?.let { point -> select(point.copy(name = name.trim(), nameOrigin = if (name.trim() != point.name) PlaceNameOrigin.CUSTOM else PlaceNameOrigin.POI)) }
+                    }) { Text("使用此位置") }
+                }
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(horizontal = 14.dp), singleLine = true,
+                    label = { Text("搜索地点、店名或地址") }, leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { keyboard?.hide(); search(query) }),
+                    trailingIcon = { IconButton(onClick = { keyboard?.hide(); search(query) }, enabled = !searching && query.isNotBlank()) { Icon(Icons.Outlined.Search, "搜索地点") } })
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    var menu by remember { mutableStateOf(false) }
+                    Box(Modifier.weight(1f)) {
+                        TextButton(onClick = { menu = true }) { Text("地区：${region.label}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) { PlaceRegion.entries.forEach { item ->
+                            DropdownMenuItem(text = { Text(item.label) }, onClick = { menu = false; changeRegion(item) })
+                        } }
+                    }
+                    val area = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(current ?: existing) else region
+                    if (area == PlaceRegion.MAINLAND || area == null) OutlinedTextField(city, changeCity,
+                        Modifier.width(136.dp), singleLine = true, placeholder = { Text("搜索城市") })
+                }
+                Box(Modifier.fillMaxWidth().weight(1f).heightIn(min = 130.dp).background(MaterialTheme.colorScheme.surfaceContainer)) {
+                    when {
+                        effectiveRegion?.provider == PlaceProvider.GOOGLE -> Text("Google 地图将后续接入，请切换到大陆、香港或澳门", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
+                        androidKey.isBlank() -> Text("在设置中填写高德 Android平台 Key 后显示地图", Modifier.align(Alignment.Center).padding(24.dp), fontSize = 13.sp)
+                        !privacyAgreed -> Column(Modifier.align(Alignment.Center).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("地图由高德提供，用于浏览地图和拖动选点。启用前请阅读高德隐私政策。", fontSize = 13.sp)
+                            TextButton(onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://lbs.amap.com/pages/privacy/"))) } }) { Text("高德隐私政策") }
+                            Button(onClick = agreePrivacy) { Text("同意并启用地图") }
+                        }
+                        else -> {
+                            AmapMapPanel(androidKey, mapCenter, { point -> selected = null; name = ""; query = ""; userSelected = true; moveMap(point) }, Modifier.fillMaxSize())
+                            Icon(Icons.Outlined.LocationOn, "地图中心选点", Modifier.align(Alignment.Center).size(38.dp).offset(y = (-18).dp), tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    FilledTonalIconButton(onClick = { userSelected = false; selected = current; name = current?.name.orEmpty(); query = ""; retryCurrent() }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp), enabled = !locating) {
+                        Icon(Icons.Outlined.MyLocation, "回到当前位置")
+                    }
+                }
+                if (searching || resolvingMap) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (error != null) Text(error, Modifier.padding(horizontal = 16.dp, vertical = 5.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
+                    item {
+                        Text(if (results.isNotEmpty()) "搜索结果 · 距离由近到远" else "附近店铺与地点", Modifier.padding(6.dp), fontWeight = FontWeight.Medium)
+                        if (locating) Text("正在获取当前位置…", Modifier.padding(6.dp), fontSize = 12.sp)
+                    }
+                    if (results.isEmpty() && current != null) item { PlaceChoice(current, selected, "当前位置") { choose(current) } }
+                    if (results.isEmpty() && existing != null && (current == null || !existing.sameCoordinates(current))) item { PlaceChoice(existing, selected, "日记现有位置") { choose(existing) } }
+                    val candidates = if (results.isNotEmpty()) results else nearby
+                    val ordered = if (distanceCenter != null && candidates.all { it.coordinateSystem == distanceCenter.coordinateSystem }) nearestPlaces(candidates, distanceCenter) else candidates
+                    items(ordered) { point ->
+                        val distance = distanceCenter?.takeIf { it.coordinateSystem == point.coordinateSystem }?.let { distanceLabel(distanceMeters(point, it)) }.orEmpty()
+                        PlaceChoice(point, selected, distance) { choose(point) }
+                    }
+                    item {
+                        if (selected != null) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(name.ifBlank { "已选择地图中心" }, Modifier.weight(1f), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                TextButton(onClick = { editName = !editName }) { Text("修改店名") }
+                            }
+                            if (editName) OutlinedTextField(name, { name = it; userSelected = true }, label = { Text("地点名称 / 店名") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                        }
+                        Text("高德地图 · 拖动地图可重新选点", Modifier.padding(vertical = 8.dp), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
-            TextButton(onClick = retryCurrent, enabled = !locating) { Text(if (current == null) "重新获取当前位置" else "刷新当前位置") }
-            if (existing != null && (current == null || !existing.sameCoordinates(current))) {
-                Text("日记现有位置", fontWeight = FontWeight.Medium)
-                PlaceChoice(existing, selected, "现有位置", { choose(existing) })
-            }
-            if (searching) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (results.isNotEmpty()) {
-                Text("搜索结果", fontWeight = FontWeight.Medium)
-                results.forEach { point -> PlaceChoice(point, selected, "搜索结果", { choose(point) }) }
-            }
-            if (error != null) Text(error, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
-            Text("使用开放地图搜索，未收录的店铺可尝试完整地址。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TextButton(onClick = { runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://www.openstreetmap.org/copyright"))) } }) {
-                Text("© OpenStreetMap contributors · Photon", fontSize = 10.sp)
-            }
-            if (selected != null) {
-                HorizontalDivider()
-                OutlinedTextField(name, { name = it; userSelected = true }, label = { Text("地点名称 / 店名") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                Text("可修改显示名称，坐标保持所选地点的位置。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        } },
-        confirmButton = { TextButton(enabled = selected != null && name.isNotBlank(), onClick = {
-            selected?.let { select(it.copy(name = name.trim())) }
-        }) { Text("使用此位置") } },
-        dismissButton = { TextButton(onClick = close) { Text("取消") } })
+        }
+    }
 }
 
-@Composable private fun PlaceChoice(point: GeoPoint, selected: GeoPoint?, fallback: String, choose: () -> Unit) {
+@Composable private fun PlaceChoice(point: GeoPoint, selected: GeoPoint?, prefix: String, choose: () -> Unit) {
     val checked = selected?.let { it.sameCoordinates(point) && it.name == point.name } == true
-    Row(Modifier.fillMaxWidth().clickable(onClick = choose).padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected = checked, onClick = choose)
+    Row(Modifier.fillMaxWidth().clickable(onClick = choose).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        RadioButton(checked, onClick = choose)
         Column(Modifier.weight(1f)) {
-            Text(point.name.ifBlank { point.address }.ifBlank { fallback }, fontWeight = FontWeight.Medium, fontSize = 15.sp)
-            val detail = point.address.takeIf { it.isNotBlank() && it != point.name } ?: if (point.name.isBlank()) "可填写地点名称" else ""
-            if (detail.isNotBlank()) Text(detail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (prefix.isNotBlank()) Text(prefix, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+            Text(point.label(), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            if (point.address.isNotBlank() && point.address != point.name) Text(point.address, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Icon(Icons.Outlined.LocationOn, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
     }
 }

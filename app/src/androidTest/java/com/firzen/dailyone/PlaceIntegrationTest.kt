@@ -59,16 +59,16 @@ class PlaceIntegrationTest {
             assertThrows(IllegalArgumentException::class.java) { photoShareIntent(context, File(context.filesDir, "journal.db")) }
         } finally { file.delete() }
     }
-    @Test fun deviceOpenMapSearchHasNamedResults() = runBlocking {
+    @Test fun deviceAmapSearchWorksInMainlandHongKongAndMacao() = runBlocking {
         assumeTrue(InstrumentationRegistry.getArguments().getString("live-place-lookup") == "true")
         val service = PlaceService(InstrumentationRegistry.getInstrumentation().targetContext)
-        val results = service.search("广州塔")
-        assertTrue("No landmark results from OpenStreetMap search", results.isNotEmpty())
-        val point = results.first()
-        println("Public landmark lookup: ${point.label()}")
-        assertEquals("OpenStreetMap", point.source)
-        InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply {
-            putString("open_map_live_result", "PASS: ${results.size} results for public landmark")
-        })
+        for ((region, query, city) in listOf(Triple(PlaceRegion.MAINLAND, "广州塔", "广州"), Triple(PlaceRegion.HONG_KONG, "星巴克", ""), Triple(PlaceRegion.MACAO, "大三巴牌坊", ""))) {
+            val results = service.search(query, null, region, city)
+            assertTrue("No results for ${region.name}", results.isNotEmpty())
+            assertTrue(results.all { it.source == "AMap" && it.countryCode == region.countryCode && it.coordinateSystem == CoordinateSystem.GCJ02 })
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, android.os.Bundle().apply {
+                putString("amap_live_result", "PASS ${region.name}: ${results.size} public POI results")
+            })
+        }
     }
 }

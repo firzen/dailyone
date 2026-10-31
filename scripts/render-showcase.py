@@ -16,14 +16,14 @@ parts = ['''<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1800" v
 <g font-family="PingFang SC, sans-serif" fill="#22343E">
 <text x="76" y="126" font-family="Helvetica Neue, sans-serif" font-size="47" font-weight="700">DailyOne</text>
 <text x="78" y="171" font-size="20" fill="#168CCC" letter-spacing="3">ANDROID JOURNAL</text>
-<text x="76" y="340" font-size="66" font-weight="650">把今天留下来。</text>
-<text x="76" y="430" font-size="60" font-weight="650">让回忆有迹可循。</text>
-<text x="80" y="519" font-size="27" fill="#60737D">文字、照片、视频和去过的地方。</text>
-<text x="80" y="564" font-size="27" fill="#60737D">一份记录，三种方式回看。</text>
+<text x="76" y="340" font-size="66" font-weight="650">扫一扫相册，</text>
+<text x="76" y="430" font-size="60" font-weight="650">把照片整理成日记。</text>
+<text x="80" y="519" font-size="27" fill="#60737D">本机识别人物照片，按拍摄日期整理。</text>
+<text x="80" y="564" font-size="27" fill="#60737D">自动生成候选日记，挑选后留下。</text>
 <rect x="78" y="632" width="405" height="60" rx="30" fill="#168CCC"/>
 <text x="107" y="671" font-family="Helvetica Neue, sans-serif" font-size="25" fill="white">A Day One alternative.</text>
-<text x="80" y="780" font-size="24">离线记录 · 保留原图</text>
-<text x="80" y="826" font-size="24">Day One 导入 · 自有 WebDAV 同步</text>
+<text x="80" y="780" font-size="24">照片生成日记 · 本机识别 · 随时续扫</text>
+<text x="80" y="826" font-size="24">Day One 导入 · 支持私有 WebDAV 同步</text>
 <text x="80" y="1032" font-size="18" fill="#71848D">真实 Android 界面 / 独立演示内容</text>
 ''']
 for index, (name, title, subtitle) in enumerate([

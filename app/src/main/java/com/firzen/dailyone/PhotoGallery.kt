@@ -37,8 +37,9 @@ import java.io.File
     remove: (String) -> Unit, move: (Int, Int) -> Unit) {
     if (photos.isEmpty()) return
     var selected by remember { mutableStateOf<Int?>(null) }
-    val ratios by produceState<List<Float>?>(null, photos, media) {
-        value = withContext(Dispatchers.IO) { photos.map { name ->
+    var ratios by remember(photos, media) { mutableStateOf<List<Float>?>(null) }
+    LaunchedEffect(photos, media) {
+        ratios = withContext(Dispatchers.IO) { photos.map { name ->
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(File(media, name).path, options)
             if (options.outWidth > 0 && options.outHeight > 0) options.outWidth.toFloat() / options.outHeight else 1f

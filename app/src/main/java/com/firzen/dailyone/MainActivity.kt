@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -80,9 +82,29 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             if (draft == null) JournalList(entries, vm.loading, vm.busy, vm.config.url.isNotBlank(),
                 vm.store.mediaDir, { vm.open(it) }, { vm.open() }, { settingsOpen = true }, vm::sync)
             else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete)
+            vm.photoTimePrompt?.let { prompt ->
+                var rememberChoice by remember(prompt.entryId, prompt.timestamp) { mutableStateOf(false) }
+                AlertDialog(
+                    onDismissRequest = { vm.choosePhotoTime(false, false) },
+                    title = { Text("是否使用媒体时间？", fontSize = 25.sp) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                            Text(date(prompt.timestamp, "yyyy年M月d日 OOOO HH:mm:ss"), fontSize = 15.sp)
+                            Text("使用本次所选图片中第一张有拍摄时间的图片。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(Modifier.fillMaxWidth().toggleable(rememberChoice, role = Role.Checkbox, onValueChange = { rememberChoice = it }).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(rememberChoice, onCheckedChange = null)
+                                Text("记住我的选择", Modifier.padding(start = 12.dp), fontSize = 15.sp)
+                            }
+                            Text("稍后可在设置中更改此项。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    },
+                    confirmButton = { FilledTonalButton(onClick = { vm.choosePhotoTime(true, rememberChoice) }) { Text("是") } },
+                    dismissButton = { FilledTonalButton(onClick = { vm.choosePhotoTime(false, rememberChoice) }) { Text("不") } }
+                )
+            }
             if (settingsOpen) {
                 ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
-                    CloudForm(vm.config, vm.busy, vm.settingsError, { vm.configure(it) { settingsOpen = false } })
+                    CloudForm(vm.config, vm.busy, vm.settingsError, vm.photoTimePreference, vm::setPhotoTimePreference, { vm.configure(it) { settingsOpen = false } })
                 }
             }
         }
@@ -101,7 +123,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 if (busy) CircularProgressIndicator(Modifier.size(21.dp), color = Color.White, strokeWidth = 2.dp)
                 else Icon(Icons.Outlined.CloudSync, if (configured) "立即同步" else "配置云存储", tint = Color.White)
             }
-            IconButton(onClick = settings, enabled = !busy && !loading) { Icon(Icons.Outlined.MoreVert, "云存储设置", tint = Color.White) }
+            IconButton(onClick = settings, enabled = !busy && !loading) { Icon(Icons.Outlined.MoreVert, "设置", tint = Color.White) }
         }
         Column(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)).background(MaterialTheme.colorScheme.background)) {
             Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -260,12 +282,27 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } })
 }
 
-@Composable private fun CloudForm(config: CloudConfig, busy: Boolean, error: String?, save: (CloudConfig) -> Unit) {
+@Composable private fun CloudForm(config: CloudConfig, busy: Boolean, error: String?, photoTimePreference: PhotoTimePreference,
+    setPhotoTimePreference: (PhotoTimePreference) -> Unit, save: (CloudConfig) -> Unit) {
     var url by remember(config) { mutableStateOf(config.url) }
     var username by remember(config) { mutableStateOf(config.username) }
     var password by remember(config) { mutableStateOf(config.password) }
     Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("云存储", fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        Text("设置", fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        var photoTimeMenu by remember { mutableStateOf(false) }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("添加图片时", modifier = Modifier.weight(1f), fontSize = 15.sp)
+            Box {
+                TextButton(onClick = { photoTimeMenu = true }) { Text(photoTimePreference.label) }
+                DropdownMenu(expanded = photoTimeMenu, onDismissRequest = { photoTimeMenu = false }) {
+                    PhotoTimePreference.entries.forEach { option ->
+                        DropdownMenuItem(text = { Text(option.label) }, onClick = { setPhotoTimePreference(option); photoTimeMenu = false })
+                    }
+                }
+            }
+        }
+        HorizontalDivider()
+        Text("云存储", fontSize = 17.sp, fontWeight = FontWeight.Medium)
         Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(10.dp)).padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Cloud, null, tint = MaterialTheme.colorScheme.primary)
             Text("WebDAV", Modifier.padding(start = 12.dp).weight(1f), fontSize = 16.sp)

@@ -16,6 +16,11 @@ import kotlinx.coroutines.withContext
 class JournalViewModel(app: Application) : AndroidViewModel(app) {
     val store = JournalStore(app)
     private val settings = CloudSettings(app)
+    private val preferences = app.getSharedPreferences("journal_preferences", android.content.Context.MODE_PRIVATE)
+    var photoTimePreference by mutableStateOf(runCatching {
+        PhotoTimePreference.valueOf(preferences.getString("photo_time", "ASK") ?: "ASK")
+    }.getOrDefault(PhotoTimePreference.ASK)); private set
+    var photoTimePrompt by mutableStateOf<PhotoTimePrompt?>(null); private set
     val entries = store.entries
     var draft by mutableStateOf<Entry?>(null); private set
     var config by mutableStateOf(CloudConfig()); private set
@@ -69,16 +74,38 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         if (uris.size > available) events.trySend("每篇最多 20 张图片，本次添加前 $available 张")
         importing = true
         viewModelScope.launch {
+            var firstTime: Long? = null
             try {
                 for (uri in uris.take(available)) {
                     try {
+                        val timestamp = store.photoTime(uri)
                         val name = store.importPhoto(uri)
+                        if (firstTime == null) firstTime = timestamp
                         val latest = draft
                         if (latest?.id == original.id) change(latest.copy(photos = latest.photos + name))
                     } catch (e: Exception) { events.send("有一张图片添加失败：${e.message}") }
                 }
+                val latest = draft
+                val timestamp = firstTime
+                if (latest?.id == original.id && timestamp != null) {
+                    when (photoTimePreference) {
+                        PhotoTimePreference.ASK -> photoTimePrompt = PhotoTimePrompt(original.id, timestamp)
+                        PhotoTimePreference.USE -> change(latest.copy(createdAt = timestamp))
+                        PhotoTimePreference.KEEP -> Unit
+                    }
+                }
             } finally { importing = false }
         }
+    }
+    fun setPhotoTimePreference(value: PhotoTimePreference) {
+        photoTimePreference = value
+        preferences.edit().putString("photo_time", value.name).apply()
+    }
+    fun choosePhotoTime(use: Boolean, remember: Boolean) {
+        val prompt = photoTimePrompt ?: return
+        if (remember) setPhotoTimePreference(if (use) PhotoTimePreference.USE else PhotoTimePreference.KEEP)
+        if (use) draft?.takeIf { it.id == prompt.entryId }?.let { change(it.copy(createdAt = prompt.timestamp)) }
+        photoTimePrompt = null
     }
     fun configure(value: CloudConfig, onSaved: () -> Unit) {
         if (busy) return

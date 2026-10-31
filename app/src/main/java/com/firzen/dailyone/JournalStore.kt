@@ -47,6 +47,25 @@ class JournalStore(context: Context) : SQLiteOpenHelper(context, "journal.db", n
         writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL")
         refresh()
     } }
+    suspend fun photoTime(uri: Uri): Long? = withContext(Dispatchers.IO) {
+        val exifTime = runCatching {
+            appContext.contentResolver.openInputStream(uri).use { stream ->
+                if (stream == null) null else {
+                    val exif = ExifInterface(stream)
+                    parsePhotoTime(exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL), exif.getAttribute(ExifInterface.TAG_OFFSET_TIME_ORIGINAL))
+                        ?: parsePhotoTime(exif.getAttribute(ExifInterface.TAG_DATETIME_DIGITIZED), exif.getAttribute(ExifInterface.TAG_OFFSET_TIME_DIGITIZED))
+                        ?: parsePhotoTime(exif.getAttribute(ExifInterface.TAG_DATETIME), exif.getAttribute(ExifInterface.TAG_OFFSET_TIME))
+                }
+            }
+        }.getOrNull()
+        exifTime ?: runCatching {
+            val column = android.provider.MediaStore.Images.ImageColumns.DATE_TAKEN
+            appContext.contentResolver.query(uri, arrayOf(column), null, null, null)?.use { cursor ->
+                val index = cursor.getColumnIndex(column)
+                if (cursor.moveToFirst() && index >= 0 && !cursor.isNull(index)) cursor.getLong(index).takeIf { it > 0 } else null
+            }
+        }.getOrNull()
+    }
     suspend fun importPhoto(uri: Uri): String = withContext(Dispatchers.IO) {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         appContext.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, bounds) }

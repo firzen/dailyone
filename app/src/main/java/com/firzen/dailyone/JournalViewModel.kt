@@ -53,18 +53,79 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun stopGeoBackfill() { geoBackfill?.stop?.set(true) }
+    private val places by lazy { PlaceService(getApplication()) }
+    var locationPickerOpen by mutableStateOf(false); private set
     var locating by mutableStateOf(false); private set
+    var currentPlace by mutableStateOf<GeoPoint?>(null); private set
+    var placeResults by mutableStateOf<List<GeoPoint>>(emptyList()); private set
+    var searchingPlaces by mutableStateOf(false); private set
+    var placeError by mutableStateOf<String?>(null); private set
+    private var searchRevision = 0
+    private var searchJob: kotlinx.coroutines.Job? = null
+    private var currentPlaceJob: kotlinx.coroutines.Job? = null
+    private var placeSession = 0
+    fun showLocationPicker() {
+        if (draft == null) return
+        locationPickerOpen = true; placeSession++; currentPlace = null
+        placeResults = emptyList(); placeError = null
+    }
+    fun closeLocationPicker() {
+        locationPickerOpen = false; placeSession++
+        searchJob?.cancel(); currentPlaceJob?.cancel(); searchingPlaces = false; locating = false
+    }
+    fun locationPermissionDenied() { placeError = "未允许定位，仍可搜索并选择地点" }
     fun recordCurrentLocation() {
-        val original = draft ?: return
-        if (locating) return
-        locating = true
+        if (!locationPickerOpen || locating) return
+        val session = placeSession
+        locating = true; placeError = null
+        currentPlaceJob = viewModelScope.launch {
+            try {
+                val point = currentLocation(getApplication())
+                    ?: error("暂未获取到当前位置，仍可搜索地点或稍后重试")
+                if (session != placeSession) return@launch
+                currentPlace = point
+                val named = try { places.reverse(point) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+                if (session == placeSession) currentPlace = named ?: point
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { if (session == placeSession) placeError = e.message ?: "获取当前位置失败" }
+            finally { if (session == placeSession) locating = false }
+        }
+    }
+    fun searchPlaces(query: String) {
+        val revision = ++searchRevision
+        searchJob?.cancel()
+        if (query.isBlank()) { searchingPlaces = false; placeResults = emptyList(); placeError = "请输入地点名称或地址"; return }
+        val session = placeSession
+        searchingPlaces = true; placeError = null; placeResults = emptyList()
+        searchJob = viewModelScope.launch {
+            try {
+                val results = places.search(query)
+                if (session == placeSession && revision == searchRevision) {
+                    placeResults = results
+                    if (results.isEmpty()) placeError = "未找到地点，请加上城市或详细地址重试"
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { if (session == placeSession && revision == searchRevision) placeError = e.message ?: "地点搜索失败，请重试" }
+            finally { if (session == placeSession && revision == searchRevision) searchingPlaces = false }
+        }
+    }
+    fun selectPlace(point: GeoPoint) {
+        draft?.let { change(it.copy(recordedLocation = point)) }
+        closeLocationPicker()
+    }
+    private fun resolveEntryPlace(entry: Entry) {
+        val point = entry.location?.takeIf { it.name.isBlank() && it.address.isBlank() } ?: return
         viewModelScope.launch {
             try {
-                val location = currentLocation(getApplication())
-                if (location == null) events.send("暂未获取到当前位置，请在室外或网络良好时重试")
-                else if (draft?.id == original.id) draft?.let { change(it.copy(recordedLocation = location)) }
-            } catch (e: Exception) { events.send(e.message ?: "获取定位失败") }
-            finally { locating = false }
+                val named = places.reverse(point) ?: return@launch
+                store.nameLocation(entry.id, point, named)
+                draft?.takeIf { it.id == entry.id }?.let { current ->
+                    draft = current.copy(
+                        recordedLocation = current.recordedLocation?.let { if (it.sameCoordinates(point) && it.name.isBlank()) named else it },
+                        photoLocations = current.photoLocations.mapValues { (_, value) -> if (value.sameCoordinates(point) && value.name.isBlank()) named else value })
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { /* Keep the coordinate; the picker offers retry and a custom name. */ }
         }
     }
     private val editingId = AtomicReference<String?>(null)
@@ -143,7 +204,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             finally { loading = false }
         }
     }
-    fun open(entry: Entry = Entry()) { if (!busy && !loading) { draft = entry; editingId.set(entry.id); saved = true } }
+    fun open(entry: Entry = Entry()) { if (!busy && !loading) { draft = entry; editingId.set(entry.id); saved = true; resolveEntryPlace(entry) } }
     fun change(entry: Entry) {
         val next = entry.copy(updatedAt = System.currentTimeMillis(), dirty = !entry.candidate)
         draft = next
@@ -158,7 +219,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     fun back() {
         if (importing) return
         if (!saved) { events.trySend("正在保存，请稍候；如保存失败，请修改内容后重试"); return }
-        draft = null; editingId.set(null)
+        closeLocationPicker(); draft = null; editingId.set(null)
     }
     fun delete() {
         val entry = draft ?: return

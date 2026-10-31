@@ -115,8 +115,16 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
     }
     suspend fun save(entry: Entry) = lock.withLock { withContext(Dispatchers.IO) {
         val resolved = resolvePhotos(entry)
-        val metadata = get(entry.id)?.photoLocations.orEmpty() + resolved.photoLocations
-        write(resolved.copy(photoLocations = metadata.filterKeys { it in resolved.photos }))
+        val latest = get(entry.id)
+        val metadata = (latest?.photoLocations.orEmpty() + resolved.photoLocations).mapValues { (name, point) ->
+            val stored = latest?.photoLocations?.get(name)
+            if (point.name.isBlank() && point.address.isBlank() && stored != null && point.sameCoordinates(stored)) stored else point
+        }
+        val manual = resolved.recordedLocation?.let { point ->
+            val stored = latest?.recordedLocation
+            if (point.name.isBlank() && point.address.isBlank() && stored != null && point.sameCoordinates(stored)) stored else point
+        }
+        write(resolved.copy(photoLocations = metadata.filterKeys { it in resolved.photos }, recordedLocation = manual))
     } }
     suspend fun resetSyncBaseline() = lock.withLock { withContext(Dispatchers.IO) {
         writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL")
@@ -206,6 +214,14 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         } finally { writableDatabase.endTransaction() }
         refresh()
         affected.size
+    } }
+    suspend fun nameLocation(id: String, point: GeoPoint, named: GeoPoint) = lock.withLock { withContext(Dispatchers.IO) {
+        require(point.sameCoordinates(named))
+        val entry = get(id)?.takeUnless { it.deleted } ?: return@withContext
+        fun resolve(value: GeoPoint): GeoPoint = if (value.sameCoordinates(point) && value.name.isBlank() && value.address.isBlank()) named else value
+        val next = entry.copy(recordedLocation = entry.recordedLocation?.let(::resolve),
+            photoLocations = entry.photoLocations.mapValues { resolve(it.value) })
+        if (next != entry) write(next.copy(updatedAt = System.currentTimeMillis(), dirty = !entry.candidate))
     } }
     suspend fun fillLocations(found: Map<String, GeoPoint>): Int = lock.withLock { withContext(Dispatchers.IO) {
         val changes = entries.value.filterNot { it.deleted }.mapNotNull { entry ->

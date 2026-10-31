@@ -18,6 +18,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.*
@@ -199,6 +201,7 @@ internal fun photoAspect(file: File): Float {
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable private fun PhotoViewer(photos: List<String>, media: File, initial: Int, close: () -> Unit) {
+    val context = LocalContext.current
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val pager = rememberPagerState(initialPage = initial, pageCount = { photos.size })
         var zoomed by remember { mutableStateOf(false) }
@@ -227,6 +230,10 @@ internal fun photoAspect(file: File): Float {
             Row(Modifier.fillMaxWidth().statusBarsPadding().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = close) { Icon(Icons.Outlined.Close, "关闭大图", tint = Color.White) }
                 Text("${pager.currentPage + 1} / ${photos.size}", color = Color.White, modifier = Modifier.weight(1f), fontSize = 15.sp)
+                IconButton(onClick = {
+                    runCatching { context.startActivity(android.content.Intent.createChooser(photoShareIntent(context, File(media, photos[pager.currentPage])), "分享原图")) }
+                        .onFailure { android.widget.Toast.makeText(context, it.message ?: "无法分享图片", android.widget.Toast.LENGTH_SHORT).show() }
+                }) { Icon(Icons.Outlined.Share, "分享当前图片", tint = Color.White) }
             }
         }
     }

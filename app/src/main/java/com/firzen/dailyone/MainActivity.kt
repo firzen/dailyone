@@ -103,13 +103,14 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         else backfillLauncher.launch(backfillPermissions)
     }
     val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-        if (grants.values.any { it }) vm.recordCurrentLocation()
+        if (grants.values.any { it }) vm.recordCurrentLocation() else vm.locationPermissionDenied()
     }
-    val recordLocation = {
+    val fetchCurrentPlace = {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) vm.recordCurrentLocation()
         else locationLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
     }
+    val recordLocation = { vm.showLocationPicker(); fetchCurrentPlace() }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants.any { (permission, granted) -> granted && permission != Manifest.permission.ACCESS_MEDIA_LOCATION }) vm.startScan() else vm.photoPermissionDenied()
     }
@@ -146,6 +147,8 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 { entry, retain -> if (retain) keep(entry) else vm.review(entry.id, false) }, selectedIds, toggleSelection,
                 { selectedIds = emptySet() }, { batchDialog = false }, { batchDialog = true })
             else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete, vm::removePhoto, { keep(it) }, recordLocation, vm.locating)
+            if (vm.locationPickerOpen && draft != null) LocationPicker(vm.currentPlace, draft.location, vm.placeResults,
+                vm.locating, vm.searchingPlaces, vm.placeError, vm::searchPlaces, fetchCurrentPlace, vm::selectPlace, vm::closeLocationPicker)
             batchDialog?.let { merge ->
                 val chosen = entries.filter { it.id in selectedIds }
                 val preview = if (merge && chosen.size > 1) journalBatch(chosen, true).first().second else null
@@ -345,13 +348,14 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     var confirmDate by remember(entry.id) { mutableStateOf(entry.scanDay == "unknown") }
     var confirmDelete by remember { mutableStateOf(false) }
     var entryMenu by remember { mutableStateOf(false) }
+    val latestEntry by rememberUpdatedState(entry)
     val cursor = SolidColor(MaterialTheme.colorScheme.primary)
     val detailScroll = rememberScrollState()
     var detailViewport by remember { mutableStateOf<Rect?>(null) }
     Column(Modifier.fillMaxSize().imePadding()) {
         Row(Modifier.fillMaxWidth().height(72.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = back, enabled = saved && !importing) { Icon(Icons.Outlined.ArrowBack, "保存并返回") }
-            Text(if (entry.scanDay == "unknown") "日期待确认" else date(entry.createdAt, "EEE，yyyy年M月d日"), Modifier.weight(1f).padding(start = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 21.sp)
+            Text(if (entry.scanDay == "unknown") "日期待确认" else date(entry.createdAt, "EEE，yyyy年M月d日"), Modifier.weight(1f).padding(start = 8.dp).clickable(enabled = editing) { confirmDate = true }, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 21.sp)
             if (editing) TextButton(onClick = {
                 if (entry.candidate) {
                     if (entry.scanDay == "unknown") { confirmDate = true } else { keepCandidate(entry); editing = false }
@@ -361,9 +365,14 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             Box {
                 IconButton(onClick = { entryMenu = true }, enabled = saved && !importing) { Icon(Icons.Outlined.MoreVert, "日记选项") }
                 DropdownMenu(expanded = entryMenu, onDismissRequest = { entryMenu = false }) {
+                    DropdownMenuItem(text = { Text("修改日期和时间") }, onClick = { entryMenu = false; editing = true; confirmDate = true })
                     DropdownMenuItem(text = { Text("删除日记") }, onClick = { entryMenu = false; confirmDelete = true })
                 }
             }
+        }
+        if (editing) TextButton(onClick = { confirmDate = true }, modifier = Modifier.padding(start = 10.dp)) {
+            Icon(Icons.Outlined.Schedule, null, Modifier.size(17.dp))
+            Text(if (entry.scanDay == "unknown") "设置日期和时间" else date(entry.createdAt, "yyyy年M月d日 HH:mm"), Modifier.padding(start = 8.dp))
         }
         Column(Modifier.weight(1f).onGloballyPositioned { detailViewport = it.boundsInRoot() }.verticalScroll(detailScroll).padding(horizontal = 18.dp).padding(top = 18.dp)) {
             if (editing) {
@@ -384,14 +393,18 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 move = { from, to -> val reordered = entry.photos.toMutableList(); val photo = reordered.removeAt(from); reordered.add(to, photo); change(entry.copy(photos = reordered)) }, scrollState = detailScroll, dragViewport = detailViewport)
             Spacer(Modifier.height(24.dp))
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            val location = entry.location
-            if (location != null) TextButton(onClick = {
-                val uri = Uri.parse("geo:${location.latitude},${location.longitude}?q=${location.latitude},${location.longitude}")
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
-            }, modifier = Modifier.weight(1f)) { Icon(Icons.Outlined.LocationOn, null, Modifier.size(16.dp)); Text(location.label(), fontSize = 12.sp) }
-            else Text("未记录位置", Modifier.weight(1f), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TextButton(onClick = recordLocation, enabled = !locating) { Text(if (locating) "定位中…" else "记录当前位置", fontSize = 12.sp) }
+        val location = entry.location
+        OutlinedCard(onClick = recordLocation, modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+            shape = RoundedCornerShape(12.dp), colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.LocationOn, null, tint = MaterialTheme.colorScheme.primary)
+                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                    Text(location?.label() ?: "添加位置", fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(location?.address?.takeIf { it.isNotBlank() && it != location.name } ?: "搜索地点、店名，或使用当前位置",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Icon(Icons.Outlined.ChevronRight, "选择或修改位置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         if (editing) {
             HorizontalDivider(thickness = .5.dp)
@@ -406,20 +419,9 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             Text("日记", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
         }
     }
-    if (confirmDate) {
-        var chosenDate by remember { mutableStateOf(java.time.LocalDate.now().toString()) }
-        var dateError by remember { mutableStateOf(false) }
-        AlertDialog(onDismissRequest = { confirmDate = false }, title = { Text("确认日记日期") },
-            text = { Column { Text("这些图片没有有效拍摄日期，请填写日记日期。")
-                OutlinedTextField(chosenDate, { chosenDate = it }, label = { Text("日期，如 2026-10-31") }, isError = dateError) } },
-            confirmButton = { TextButton(onClick = {
-                val day = runCatching { java.time.LocalDate.parse(chosenDate) }.getOrNull()
-                if (day == null) dateError = true else {
-                    change(entry.copy(createdAt = day.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(), scanDay = day.toString()))
-                    confirmDate = false
-                }
-            }) { Text("确定") } }, dismissButton = { TextButton(onClick = { confirmDate = false }) { Text("取消") } })
-    }
+    if (confirmDate) JournalDateTimeDialog(entry.createdAt, confirm = { timestamp ->
+        change(latestEntry.withJournalTime(timestamp)); confirmDate = false
+    }, close = { confirmDate = false })
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("删除这篇日记？") },
         text = { Text("同步后，其他设备也会删除这篇日记。") },
         confirmButton = { TextButton(onClick = { confirmDelete = false; delete() }) { Text("删除") } },

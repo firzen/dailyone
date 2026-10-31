@@ -22,4 +22,13 @@ class GeoPointTest {
         val legacy = JSONObject(entry.json()).apply { remove("photoLocations"); remove("location") }
         assertNull(Entry.parse(legacy.toString()).location)
     }
+    @Test fun placeNamesRoundTripAndLegacyCoordinatesStillLoad() {
+        val point = GeoPoint(23.1, 113.3, "店名", "详细地址")
+        assertEquals(point, GeoPoint.parse(point.json()))
+        assertEquals("店名", point.label())
+        val legacy = requireNotNull(GeoPoint.parse(JSONObject().put("latitude", 23.1).put("longitude", 113.3)))
+        assertTrue(legacy.sameCoordinates(point))
+        assertEquals("已记录位置", legacy.label())
+    }
+
 }

@@ -21,8 +21,8 @@ suspend fun currentLocation(context: Context): GeoPoint? = withTimeoutOrNull(20_
     val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
     require(fine || coarse) { "请允许定位权限" }
     val provider = when {
-        fine && manager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
         manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+        fine && manager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
         else -> error("请开启系统定位")
     }
     suspendCancellableCoroutine { continuation ->

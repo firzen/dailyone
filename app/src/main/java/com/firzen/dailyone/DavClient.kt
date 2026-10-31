@@ -19,7 +19,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
     .connectTimeout(20, TimeUnit.SECONDS).readTimeout(40, TimeUnit.SECONDS)
     .callTimeout(60, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()) {
     private val root: HttpUrl
-    private val auth = Credentials.basic(config.username, config.password)
+    private val auth = Credentials.basic(config.username.trim(), config.password)
     init {
         val base = config.url.trim().trimEnd('/').toHttpUrl()
         require(base.isHttps && base.username.isEmpty() && base.password.isEmpty() && base.query == null && base.fragment == null) {
@@ -27,6 +27,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
         }
         root = base.newBuilder().addPathSegment("DailyOne").addPathSegment("").build()
     }
+    private val nutstore get() = root.host == "dav.jianguoyun.com"
     private fun url(path: String) = root.newBuilder().apply {
         path.split('/').filter { it.isNotEmpty() }.forEach { addPathSegment(it) }
         if (path.endsWith('/')) addPathSegment("")
@@ -35,7 +36,21 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
         val body = data?.toRequestBody((headers["Content-Type"] ?: "application/octet-stream").toMediaType())
         val b = Request.Builder().url(url(path)).header("Authorization", auth)
         headers.forEach { (k, v) -> b.header(k, v) }
-        return client.newCall(b.method(method, body).build()).execute()
+        return execute(b.method(method, body).build())
+    }
+    private var cancelled = false
+    private var activeCall: okhttp3.Call? = null
+    @Synchronized fun cancelRequests() {
+        cancelled = true
+        activeCall?.cancel()
+    }
+    private fun execute(request: Request): okhttp3.Response {
+        val call = client.newCall(request)
+        synchronized(this) {
+            if (cancelled) throw IOException("同步请求已取消")
+            activeCall = call
+        }
+        return call.execute()
     }
     fun ensureCollections() {
         listOf("", "entries/", "photos/", "notebooks/").forEach { path ->
@@ -46,8 +61,9 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
     }
     fun listEntries(): Map<String, String> = listDocuments("entries")
     fun listNotebooks(): Map<String, String> = listDocuments("notebooks")
+    fun listPhotos(): Set<String> = listDocuments("photos").keys
     private fun listDocuments(collection: String): Map<String, String> {
-        val xml = """<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"""
+        val xml = """<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>"""
         val bytes = request("PROPFIND", "$collection/", xml.toByteArray(), mapOf("Depth" to "1", "Content-Type" to "application/xml")).use { r ->
             if (r.code != 207) fail(r.code)
             bounded(r, 8 * 1024 * 1024)
@@ -72,6 +88,10 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
                 val node = responses.item(i) as org.w3c.dom.Element
                 val href = node.getElementsByTagNameNS("DAV:", "href").item(0)?.textContent ?: continue
                 val name = URLDecoder.decode(URI(href).rawPath.substringAfterLast('/'), "UTF-8")
+                if (collection == "photos") {
+                    if (validPhoto(name) && node.getElementsByTagNameNS("DAV:", "collection").length == 0) put(name, "")
+                    continue
+                }
                 if (!name.endsWith(".json")) continue
                 val id = name.removeSuffix(".json")
                 if (!validId(id)) continue
@@ -91,12 +111,49 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
     }
     fun putEntry(entry: Entry): String? {
         val condition = entry.etag?.let { mapOf("If-Match" to it) } ?: mapOf("If-None-Match" to "*")
-        return request("PUT", "entries/${entry.id}.json", entry.json().toByteArray(Charsets.UTF_8), condition + ("Content-Type" to "application/json; charset=utf-8")).use { r ->
-            if (r.code == 412) throw IOException("云端日记刚被修改，请再次同步；本地修改已保留")
+        return putDocument("entries/${entry.id}.json", entry.json().toByteArray(Charsets.UTF_8), condition)
+    }
+    private fun putDocument(path: String, data: ByteArray, condition: Map<String, String>): String {
+        val headers = condition + ("Content-Type" to "application/json; charset=utf-8")
+        val tag = if (nutstore && condition.containsKey("If-None-Match")) {
+            publishNew(path, data.toRequestBody("application/json; charset=utf-8".toMediaType()), false)
+            null
+        } else request("PUT", path, data, headers).use { r ->
+            if (r.code == 412) throw IOException("云端记录刚被修改，请再次同步；本地修改已保留")
             if (!r.isSuccessful) fail(r.code)
-            r.header("ETag")?.takeUnless { it.startsWith("W/") }
+            r.header("ETag")?.trim()?.takeIf { it.isNotEmpty() && !it.startsWith("W/") }
+        }
+        if (tag != null) return tag
+        // Bind the fetched version to exactly the bytes we uploaded. A concurrent
+        // writer must never become the baseline for our different local content.
+        return request("GET", path).use { r ->
+            if (!r.isSuccessful) fail(r.code)
+            val fetchedTag = r.header("ETag")?.trim()
+            require(!fetchedTag.isNullOrBlank() && !fetchedTag.startsWith("W/")) { "服务器未提供有效 ETag" }
+            if (!bounded(r, 2 * 1024 * 1024).contentEquals(data)) {
+                throw IOException("云端记录刚被修改，请再次同步；本地修改已保留")
+            }
+            fetchedTag
         }
     }
+    // Nutstore ignores If-None-Match: *. MOVE with Overwrite:F publishes a
+    // unique staging file without replacing an existing record (409 or 412).
+    private fun publishNew(path: String, body: okhttp3.RequestBody, allowExisting: Boolean) {
+        val staging = path + "." + java.util.UUID.randomUUID() + ".upload"
+        try {
+            val put = Request.Builder().url(url(staging)).header("Authorization", auth).put(body).build()
+            execute(put).use { if (!it.isSuccessful) fail(it.code) }
+            request("MOVE", staging, headers = mapOf("Destination" to url(path).toString(), "Overwrite" to "F")).use {
+                if (it.code in listOf(409, 412)) {
+                    if (!allowExisting) throw IOException("云端记录已存在，请再次同步；本地修改已保留")
+                } else if (!it.isSuccessful) fail(it.code)
+            }
+        } finally {
+            // Only remove our own staging file, including an interrupted upload.
+            runCatching { request("DELETE", staging).close() }
+        }
+    }
+
     fun getNotebook(id: String): Notebook = request("GET", "notebooks/$id.json").use { r ->
         if (!r.isSuccessful) fail(r.code)
         val tag = r.header("ETag")
@@ -105,14 +162,15 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
     }
     fun putNotebook(book: Notebook): String {
         val condition = book.etag?.let { mapOf("If-Match" to it) } ?: mapOf("If-None-Match" to "*")
-        return request("PUT", "notebooks/${book.id}.json", book.json().toByteArray(Charsets.UTF_8), condition + ("Content-Type" to "application/json; charset=utf-8")).use { r ->
-            if (r.code == 412) throw IOException("日记本刚被修改，请再次同步")
-            if (!r.isSuccessful) fail(r.code)
-            requireNotNull(r.header("ETag")?.takeIf { it.isNotBlank() && !it.startsWith("W/") }) { "日记本写入后未提供强 ETag" }
-        }
+        return putDocument("notebooks/${book.id}.json", book.json().toByteArray(Charsets.UTF_8), condition)
     }
+
     fun putPhoto(name: String, data: ByteArray) {
         require(validPhoto(name))
+        if (nutstore) {
+            publishNew("photos/$name", data.toRequestBody("image/jpeg".toMediaType()), true)
+            return
+        }
         request("PUT", "photos/$name", data, mapOf("If-None-Match" to "*", "Content-Type" to "image/jpeg")).use { r ->
             if (!r.isSuccessful && r.code != 412) fail(r.code)
         }
@@ -125,9 +183,13 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
             "heic", "heif" -> "image/heic"; "gif" -> "image/gif"; "avif" -> "image/avif"
             else -> "application/octet-stream"
         }
+        if (nutstore) {
+            publishNew("photos/$name", file.asRequestBody(mime.toMediaType()), true)
+            return
+        }
         val req = Request.Builder().url(url("photos/$name")).header("Authorization", auth)
             .header("If-None-Match", "*").put(file.asRequestBody(mime.toMediaType())).build()
-        client.newCall(req).execute().use { if (!it.isSuccessful && it.code != 412) fail(it.code) }
+        execute(req).use { if (!it.isSuccessful && it.code != 412) fail(it.code) }
     }
     fun downloadPhoto(name: String, destination: File) {
         require(validPhoto(name))

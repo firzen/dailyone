@@ -12,11 +12,12 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class JournalViewModel(app: Application) : AndroidViewModel(app) {
-    val store = JournalStore(app)
+    val store = SyncRuntime.store(app)
     val notebooks = store.notebooks
     var selectedNotebook by mutableStateOf<String?>(null)
     var importPlan by mutableStateOf<DayOnePlan?>(null); private set
@@ -92,6 +93,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     var draft by mutableStateOf<Entry?>(null); private set
     var config by mutableStateOf(CloudConfig()); private set
     var settingsError by mutableStateOf<String?>(null); private set
+    var syncProgress by mutableStateOf(SyncRuntime.progress.value); private set
     var busy by mutableStateOf(false); private set
     var loading by mutableStateOf(true); private set
     var importing by mutableStateOf(false); private set
@@ -339,7 +341,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             catch (_: Exception) { /* Keep the coordinate; the picker offers retry and a custom name. */ }
         }
     }
-    private val editingId = AtomicReference<String?>(null)
+    private val editingId = store.editingId
     private val undoActions = mutableMapOf<String, List<Pair<Entry, Entry>>>()
     fun photoPermissionDenied() { events.trySend("请允许照片访问权限后再开始扫描") }
     fun startScan() {
@@ -407,15 +409,26 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
-    override fun onCleared() { scanner?.stop?.set(true); geoBackfill?.stop?.set(true); shopRefresh?.stop?.set(true); super.onCleared() }
+    override fun onCleared() { editingId.set(null); scanner?.stop?.set(true); geoBackfill?.stop?.set(true); shopRefresh?.stop?.set(true); super.onCleared() }
     init {
+        viewModelScope.launch { SyncRuntime.progress.collect { syncProgress = it } }
+        viewModelScope.launch { SyncRuntime.notices.flow.collect { events.send(it.message) } }
         viewModelScope.launch {
             try { store.load(); dayOne.repairImportedText(); config = withContext(Dispatchers.IO) { settings.load() }; amapKey = withContext(Dispatchers.IO) { mapSettings.loadAmapKey() }; amapAndroidKey = withContext(Dispatchers.IO) { mapSettings.loadAndroidKey() }; googleKey = withContext(Dispatchers.IO) { mapSettings.loadGoogleKey() } }
             catch (e: Exception) { events.send("读取数据失败：${e.message}") }
-            finally { loading = false }
+            finally { loading = false; SyncRuntime.resume(getApplication()) }
         }
     }
-    fun open(entry: Entry = Entry(notebookId = selectedNotebook ?: DEFAULT_NOTEBOOK)) { if (!busy && !loading) { draft = entry; editingId.set(entry.id); saved = true; resolveEntryPlace(entry) } }
+    fun open(entry: Entry = Entry(notebookId = selectedNotebook ?: DEFAULT_NOTEBOOK)) {
+        if (busy || loading) return
+        editingId.set(entry.id)
+        viewModelScope.launch {
+            // Mark the editor first, then wait only for a short database operation.
+            // A download already committing must finish before we take the draft.
+            val latest = store.lock.withLock { withContext(Dispatchers.IO) { store.get(entry.id) ?: entry } }
+            if (editingId.get() == entry.id) { draft = latest; saved = true; resolveEntryPlace(latest) }
+        }
+    }
     fun change(entry: Entry) {
         val next = entry.copy(updatedAt = System.currentTimeMillis(), dirty = !entry.candidate)
         draft = next
@@ -484,34 +497,51 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         if (use) draft?.takeIf { it.id == prompt.entryId }?.let { change(it.withJournalTime(prompt.timestamp)) }
         photoTimePrompt = null
     }
-    fun configure(value: CloudConfig, onSaved: () -> Unit) {
+    fun configure(input: CloudConfig, onSaved: () -> Unit) {
+        val value = input.copy(url = input.url.trim(), username = input.username.trim())
         if (busy) return
+        if (syncProgress.running || syncProgress.controlling) { settingsError = "请等待同步完成再修改云存储配置"; return }
         if (scanProgress.running || geoProgress.running || shopProgress.running) { settingsError = "请先停止扫描或原图恢复"; return }
         busy = true
         settingsError = null
         viewModelScope.launch {
             try {
                 DavClient(value) // Validate before persisting credentials.
+                val resumeSync = SyncRuntime.token(getApplication()) != null
+                val resumePaused = SyncRuntime.isPaused(getApplication())
+                if (resumeSync) SyncRuntime.cancel(getApplication())
                 if (value.url.trimEnd('/') != config.url.trimEnd('/') || value.username != config.username) {
                     store.resetSyncBaseline()
                 }
                 withContext(Dispatchers.IO) { settings.save(value) }
-                config = value; onSaved(); events.send("云存储配置已保存")
+                config = value
+                if (resumeSync) SyncRuntime.start(getApplication(), value, initiallyPaused = resumePaused)
+                onSaved(); events.send("云存储配置已保存")
             } catch (e: Exception) { settingsError = e.message ?: "配置保存失败" }
             finally { busy = false }
         }
     }
+    fun pauseSync() = controlSync { SyncRuntime.pause(getApplication()) }
+    fun continueSync() = controlSync { SyncRuntime.continueSync(getApplication()) }
+    fun stopSync() = controlSync { SyncRuntime.cancel(getApplication()); SyncRuntime.notices.trySend("同步已停止，已完成的结果已保留") }
+    private fun controlSync(action: suspend () -> Unit) {
+        if (SyncRuntime.progress.value.controlling) return
+        SyncRuntime.progress.value = SyncRuntime.progress.value.copy(controlling = true)
+        SyncRuntime.controls.launch {
+            try { action() }
+            catch (e: Exception) { SyncRuntime.notices.trySend(e.message ?: "同步操作失败") }
+            finally { SyncRuntime.progress.value = SyncRuntime.progress.value.copy(controlling = false) }
+        }
+    }
     fun sync() {
         if (scanProgress.running || geoProgress.running || shopProgress.running) { events.trySend("请先停止扫描或定位补全，再同步云存储"); return }
-        if (busy || loading || pending > 0 || saveFailed) return
+        if (busy || loading || syncProgress.running || pending > 0 || saveFailed) return
         if (config.url.isBlank()) { events.trySend("请先配置 WebDAV 云存储"); return }
-        busy = true
-        viewModelScope.launch {
-            try {
-                val count = SyncEngine(store).sync(config)
-                events.send(if (count == 0) "同步完成" else "同步完成，保留了 $count 篇冲突副本")
-            } catch (e: Exception) { events.send(e.message ?: "同步失败，本地日记已保留") }
-            finally { busy = false }
+        try {
+            SyncRuntime.start(getApplication(), config)
+        } catch (e: Exception) {
+            SyncRuntime.progress.value = SyncProgress(message = "无法启动后台同步")
+            events.trySend(e.message ?: "无法启动后台同步")
         }
     }
 }

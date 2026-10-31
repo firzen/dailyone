@@ -19,10 +19,13 @@ import com.amap.api.maps.model.LatLng
 import kotlin.math.abs
 
 /** Only composed after the user has accepted the SDK privacy notice. */
-@Composable internal fun AmapMapPanel(androidKey: String, center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier, points: List<JournalMapPoint> = emptyList(), pick: (List<String>) -> Unit = {}, fitPoints: Boolean = true) {
+@Composable internal fun AmapMapPanel(androidKey: String, center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier, points: List<JournalMapPoint> = emptyList(), pick: (List<String>) -> Unit = {}, fitPoints: Boolean = true, initialCamera: JournalMapCamera? = null, cameraChanged: (JournalMapCamera) -> Unit = {}) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val latestMoved by rememberUpdatedState(moved)
+    val latestCameraChanged by rememberUpdatedState(cameraChanged)
+    val restore = remember { initialCamera }
+    var restored by remember { mutableStateOf(false) }
     val latestPoints by rememberUpdatedState(points)
     val latestPick by rememberUpdatedState(pick)
     fun drawMarkers(map: AMap) {
@@ -65,6 +68,7 @@ import kotlin.math.abs
             override fun onCameraChangeFinish(position: CameraPosition?) {
                 if (latestPoints.isNotEmpty()) drawMarkers(map)
                 val target = position?.target ?: return
+                latestCameraChanged(JournalMapCamera(GeoPoint(target.latitude, target.longitude, coordinateSystem = CoordinateSystem.GCJ02), position.zoom))
                 val ignored = ignoredTarget
                 ignoredTarget = null
                 if (ignored != null && abs(target.latitude - ignored.latitude) < .00001 && abs(target.longitude - ignored.longitude) < .00001) { userGesture = false; return }
@@ -80,9 +84,20 @@ import kotlin.math.abs
         } }
         lifecycle.addObserver(observer)
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) view.onResume()
-        onDispose { lifecycle.removeObserver(observer); map.setOnMarkerClickListener(null); map.setOnCameraChangeListener(null); map.setOnMapTouchListener(null); view.onPause(); view.onDestroy() }
+        onDispose {
+            map.cameraPosition?.let { camera -> latestCameraChanged(JournalMapCamera(GeoPoint(camera.target.latitude, camera.target.longitude, coordinateSystem = CoordinateSystem.GCJ02), camera.zoom)) }
+            lifecycle.removeObserver(observer); map.setOnMarkerClickListener(null); map.setOnCameraChangeListener(null); map.setOnMapTouchListener(null); view.onPause(); view.onDestroy() }
     }
     LaunchedEffect(view, center?.coordinateKey()) {
+        if (!restored) {
+            restored = true
+            restore?.takeIf { it.point.coordinateSystem == CoordinateSystem.GCJ02 }?.let {
+                val target = LatLng(it.point.latitude, it.point.longitude)
+                ignoredTarget = target
+                view.map.moveCamera(CameraUpdateFactory.newLatLngZoom(target, it.zoom))
+                return@LaunchedEffect
+            }
+        }
         if (center != null) {
             require(center.coordinateSystem == CoordinateSystem.GCJ02)
             val target = LatLng(center.latitude, center.longitude)

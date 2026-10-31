@@ -90,6 +90,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     var settingsOpen by remember { mutableStateOf(false) }
     val draft = vm.draft?.let { current -> current.copy(photoLocations = all.firstOrNull { it.id == current.id }?.photoLocations.orEmpty() + current.photoLocations) }
     val context = LocalContext.current
+    val browseState = remember(vm.selectedNotebook) { JournalBrowseState() }
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var mergeNotebook by remember { mutableStateOf<String?>(null) }
     var batchDialog by remember { mutableStateOf<Boolean?>(null) }
@@ -134,6 +135,14 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     } }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = if (draft == null) { if (dark) Color(0xFF252B30) else Color(0xFF333C41) } else MaterialTheme.colorScheme.background) { insets ->
         Column(Modifier.fillMaxSize().padding(insets)) {
+            if (vm.syncProgress.running || vm.syncProgress.waiting || vm.syncProgress.paused || vm.syncProgress.controlling) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer).padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("同步 ${vm.syncProgress.percent}% · ${vm.syncProgress.stage}", Modifier.weight(1f), fontSize = 12.sp)
+                    TextButton(onClick = if (vm.syncProgress.paused) vm::continueSync else vm::pauseSync, enabled = !vm.syncProgress.controlling) { Text(if (vm.syncProgress.paused) "继续" else "暂停") }
+                    TextButton(onClick = vm::stopSync, enabled = !vm.syncProgress.controlling) { Text("停止") }
+                }
+                LinearProgressIndicator(progress = { vm.syncProgress.percent / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+            }
             if (vm.geoProgress.running) Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("原图恢复 ${vm.geoProgress.checked}/${vm.geoProgress.total} · 已替换 ${vm.geoProgress.replaced} 张", Modifier.weight(1f), fontSize = 12.sp)
                 TextButton(onClick = vm::stopGeoBackfill) { Text("停止") }
@@ -150,11 +159,11 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 { selectedIds = emptySet() }, { batchDialog = false }, { mergeNotebook = null; batchDialog = true }, {
                     NotebookMenu(books, vm.selectedNotebook, !vm.busy && !vm.loading && !vm.importing,
                         { vm.selectedNotebook = it; selectedIds = emptySet() }, vm::saveNotebook)
-                }, books.associate { it.id to it.name }, journalView, { journalView = it },
+                }, books.associate { it.id to it.name }, browseState, journalView, { journalView = it },
                 vm.amapAndroidKey, vm.mapPrivacyAgreed, vm::agreeMapPrivacy, { collection ->
                     val timestamp = collection.day?.atTime(java.time.LocalTime.now())?.atZone(ZoneId.systemDefault())?.toInstant()?.toEpochMilli() ?: System.currentTimeMillis()
                     vm.open(Entry(createdAt = timestamp, notebookId = vm.selectedNotebook ?: DEFAULT_NOTEBOOK, recordedLocation = collection.location))
-                }) }
+                }, syncing = vm.syncProgress.running || vm.syncProgress.waiting || vm.syncProgress.paused || vm.syncProgress.controlling) }
             else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete, vm::removePhoto, { keep(it) }, recordLocation, vm.locating, books, vm::addVideos)
             if (vm.locationPickerOpen && draft != null) LocationPicker(vm.currentPlace, draft.location, vm.placeResults,
                 vm.locating, vm.searchingPlaces, vm.placeError, vm::searchPlaces, { vm.prepareCurrentMap(); fetchCurrentPlace() }, vm::selectPlace, vm::closeLocationPicker,
@@ -216,18 +225,17 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun JournalList(listState: LazyListState, entries: List<Entry>, loading: Boolean, busy: Boolean, configured: Boolean,
+@Composable internal fun JournalList(listState: LazyListState, entries: List<Entry>, loading: Boolean, busy: Boolean, configured: Boolean,
     media: File, open: (Entry) -> Unit, create: () -> Unit, settings: () -> Unit, sync: () -> Unit,
     scan: ScanProgress, startScan: () -> Unit, stopScan: () -> Unit, review: (Entry, Boolean) -> Unit, selection: Set<String>, toggle: (Entry) -> Unit,
-    clearSelection: () -> Unit, deleteSelected: () -> Unit, mergeSelected: () -> Unit, notebookMenu: @Composable () -> Unit, notebookNames: Map<String, String>, view: JournalView, changeView: (JournalView) -> Unit,
-    androidKey: String, privacyAgreed: Boolean, agreePrivacy: () -> Unit, createInCollection: (JournalCollection) -> Unit) {
+    clearSelection: () -> Unit, deleteSelected: () -> Unit, mergeSelected: () -> Unit, notebookMenu: @Composable () -> Unit, notebookNames: Map<String, String>, browseState: JournalBrowseState, view: JournalView, changeView: (JournalView) -> Unit,
+    androidKey: String, privacyAgreed: Boolean, agreePrivacy: () -> Unit, createInCollection: (JournalCollection) -> Unit, syncing: Boolean = false) {
     val dark = isSystemInDarkTheme()
     val chrome = if (dark) Color(0xFF252B30) else Color(0xFF333C41)
     val context = LocalContext.current
-    val browsePlaces = remember(context) { PlaceService(context) }
-    var collection by remember { mutableStateOf<JournalCollection?>(null) }
-    collection?.let { selected -> JournalCollectionSheet(selected, entries, media, { collection = null },
-        { collection = null; open(it) }, { collection = null; createInCollection(selected) }) }
+    val browsePlaces = browseState.places ?: PlaceService(context).also { browseState.places = it }
+    browseState.collection?.let { selected -> JournalCollectionSheet(selected, entries, media, { browseState.collection = null },
+        open, { browseState.collection = null; createInCollection(selected) }, scroll = browseState.collectionScroll) }
     Column(Modifier.fillMaxSize().background(chrome)) {
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (selection.isNotEmpty()) IconButton(onClick = clearSelection) { Icon(Icons.Outlined.Close, "退出多选", tint = Color.White) }
@@ -237,9 +245,8 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 IconButton(onClick = mergeSelected, enabled = !busy && selection.size > 1) { Icon(Icons.Outlined.MergeType, "合并所选日记", tint = if (selection.size > 1) Color.White else Color.Gray) }
                 IconButton(onClick = deleteSelected, enabled = !busy) { Icon(Icons.Outlined.DeleteOutline, "删除所选日记", tint = Color.White) }
             } else {
-            IconButton(onClick = if (configured) sync else settings, enabled = !busy && !loading) {
-                if (busy) CircularProgressIndicator(Modifier.size(21.dp), color = Color.White, strokeWidth = 2.dp)
-                else Icon(Icons.Outlined.CloudSync, if (configured) "立即同步" else "配置云存储", tint = Color.White)
+            IconButton(onClick = if (configured) sync else settings, enabled = !busy && !loading && !syncing) {
+                Icon(Icons.Outlined.CloudSync, if (configured) "立即同步" else "配置云存储", tint = Color.White)
             }
             IconButton(onClick = settings, enabled = !busy && !loading) { Icon(Icons.Outlined.MoreVert, "设置", tint = Color.White) }
             }
@@ -250,8 +257,8 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             Box(Modifier.fillMaxSize()) {
                 if (loading) CircularProgressIndicator(Modifier.align(Alignment.Center))
-                else if (view == JournalView.CALENDAR) JournalCalendar(entries, media) { collection = it }
-                else if (view == JournalView.MAP) JournalMap(entries, browsePlaces, androidKey, privacyAgreed, agreePrivacy) { collection = it }
+                else if (view == JournalView.CALENDAR) JournalCalendar(entries, media, browseState) { browseState.selectCollection(it) }
+                else if (view == JournalView.MAP) JournalMap(entries, browsePlaces, androidKey, privacyAgreed, agreePrivacy, browseState.map) { browseState.selectCollection(it) }
                 else LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 9.dp, end = 9.dp, bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     item(key = "photo-scan") {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 7.dp), verticalAlignment = Alignment.CenterVertically) {

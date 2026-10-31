@@ -18,8 +18,8 @@ android {
         applicationId = "com.firzen.dailyone"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.9.3"
+        versionCode = 18
+        versionName = "0.9.4"
         manifestPlaceholders["googleMapsApiKey"] = googleMapsKey
         buildConfigField("boolean", "GOOGLE_MAPS_CONFIGURED", googleMapsKey.isNotBlank().toString())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -44,7 +44,10 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.21")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
     testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+    androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    androidTestImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
     androidTestImplementation(composeBom)
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")

@@ -1,0 +1,4 @@
+# Copy to local.properties (ignored by Git). Never put real keys in this example.
+# sdk.dir=/absolute/path/to/Android/sdk
+google.maps.api.key=
+# AMap Android/Web and Google Places credentials are stored encrypted on device.

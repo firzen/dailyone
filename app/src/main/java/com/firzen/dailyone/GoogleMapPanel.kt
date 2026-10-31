@@ -17,10 +17,13 @@ import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.MapView
 import com.google.android.gms.maps.model.LatLng
 
-@Composable internal fun GoogleMapPanel(center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier, points: List<JournalMapPoint> = emptyList(), pick: (List<String>) -> Unit = {}, fitPoints: Boolean = true, onLoaded: () -> Unit = {}) {
+@Composable internal fun GoogleMapPanel(center: GeoPoint?, moved: (GeoPoint) -> Unit, modifier: Modifier = Modifier, points: List<JournalMapPoint> = emptyList(), pick: (List<String>) -> Unit = {}, fitPoints: Boolean = true, initialCamera: JournalMapCamera? = null, cameraChanged: (JournalMapCamera) -> Unit = {}, onLoaded: () -> Unit = {}) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val latestMoved by rememberUpdatedState(moved)
+    val latestCameraChanged by rememberUpdatedState(cameraChanged)
+    val restore = remember { initialCamera }
+    var restored by remember { mutableStateOf(false) }
     val latestLoaded by rememberUpdatedState(onLoaded)
     val latestPoints by rememberUpdatedState(points)
     val latestPick by rememberUpdatedState(pick)
@@ -58,6 +61,8 @@ import com.google.android.gms.maps.model.LatLng
                     true
                 }
                 google.setOnCameraIdleListener {
+                    val camera = google.cameraPosition
+                    latestCameraChanged(JournalMapCamera(GeoPoint(camera.target.latitude, camera.target.longitude, source = "Google"), camera.zoom))
                     drawMarkers(google)
                     if (userGesture) {
                         userGesture = false
@@ -83,6 +88,7 @@ import com.google.android.gms.maps.model.LatLng
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { view.onStart(); started = true }
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) resume()
         onDispose {
+            map?.cameraPosition?.let { camera -> latestCameraChanged(JournalMapCamera(GeoPoint(camera.target.latitude, camera.target.longitude, source = "Google"), camera.zoom)) }
             disposed = true; lifecycle.removeObserver(observer)
             map?.setOnMarkerClickListener(null)
             map?.setOnCameraMoveStartedListener(null); map?.setOnCameraIdleListener(null); map?.setOnMapLoadedCallback(null)
@@ -90,8 +96,16 @@ import com.google.android.gms.maps.model.LatLng
         }
     }
     LaunchedEffect(map, center?.coordinateKey()) {
+        val google = map ?: return@LaunchedEffect
+        if (!restored) {
+            restored = true
+            restore?.takeIf { it.point.coordinateSystem == CoordinateSystem.WGS84 }?.let {
+                google.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(it.point.latitude, it.point.longitude), it.zoom))
+                return@LaunchedEffect
+            }
+        }
         val point = center?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 } ?: return@LaunchedEffect
-        map?.let { google -> google.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(point.latitude, point.longitude), google.cameraPosition.zoom.coerceAtLeast(16f))) }
+        google.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(point.latitude, point.longitude), google.cameraPosition.zoom.coerceAtLeast(16f)))
     }
     LaunchedEffect(map, points) {
         val google = map ?: return@LaunchedEffect

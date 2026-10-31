@@ -29,10 +29,10 @@ class CloudSettings(context: Context, preferenceName: String = "cloud", private 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
         val o = JSONObject(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8))
-        return CloudConfig(o.getString("url"), o.getString("username"), o.getString("password"))
+        return CloudConfig(o.getString("url"), o.getString("username").trim(), o.getString("password"))
     }
     fun save(config: CloudConfig) {
-        val text = JSONObject().put("url", config.url).put("username", config.username).put("password", config.password).toString()
+        val text = JSONObject().put("url", config.url).put("username", config.username.trim()).put("password", config.password).toString()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.doFinal(text.toByteArray(Charsets.UTF_8))

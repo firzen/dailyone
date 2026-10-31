@@ -12,6 +12,7 @@ import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -24,6 +25,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -39,7 +41,7 @@ import java.util.Locale
 internal enum class JournalView(val label: String) { LIST("列表"), CALENDAR("日历"), MAP("地图") }
 internal data class JournalCollection(val title: String, val ids: List<String>, val day: LocalDate? = null, val location: GeoPoint? = null)
 
-@Composable internal fun JournalCalendar(entries: List<Entry>, media: File, choose: (JournalCollection) -> Unit) {
+@Composable internal fun JournalCalendar(entries: List<Entry>, media: File, browse: JournalBrowseState? = null, choose: (JournalCollection) -> Unit) {
     val days = remember(entries) { journalDays(entries) }
     val today = LocalDate.now()
     val months = remember(days, today) {
@@ -50,7 +52,8 @@ internal data class JournalCollection(val title: String, val ids: List<String>, 
     val latestMonth = days.keys.maxOrNull()?.let(YearMonth::from)
     val initialMonth = months.indexOf(latestMonth).coerceAtLeast(0)
     val state = rememberLazyListState(initialFirstVisibleItemIndex = initialMonth + if (initialMonth > 0 && entries.any { it.scanDay == "unknown" }) 1 else 0)
-    LazyColumn(state = state, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 96.dp)) {
+    val retainedState = browse?.calendar ?: state.also { browse?.calendar = it }
+    LazyColumn(state = retainedState, modifier = Modifier.fillMaxSize().testTag("journal-calendar"), contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 96.dp)) {
         if (entries.any { it.scanDay == "unknown" }) item(key = "unknown") {
             TextButton(onClick = { choose(JournalCollection("日期待确认", entries.filter { it.scanDay == "unknown" }.map { it.id })) }) { Text("查看日期待确认的日记") }
         }
@@ -86,10 +89,11 @@ internal data class JournalCollection(val title: String, val ids: List<String>, 
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable internal fun JournalCollectionSheet(collection: JournalCollection, entries: List<Entry>, media: File, close: () -> Unit, open: (Entry) -> Unit, create: () -> Unit) {
+@Composable internal fun JournalCollectionSheet(collection: JournalCollection, entries: List<Entry>, media: File, close: () -> Unit, open: (Entry) -> Unit, create: () -> Unit, scroll: LazyListState? = null) {
+    val listState = scroll ?: rememberLazyListState()
     val chosen = entries.filter { it.id in collection.ids }.sortedByDescending { it.createdAt }
     ModalBottomSheet(onDismissRequest = close, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).testTag("journal-collection"), state = listState, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item {
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(collection.title, fontSize = 24.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -118,30 +122,37 @@ internal data class JournalCollection(val title: String, val ids: List<String>, 
     }
 }
 
-@Composable internal fun JournalMap(entries: List<Entry>, service: PlaceService, androidKey: String, privacyAgreed: Boolean, agreePrivacy: () -> Unit, choose: (JournalCollection) -> Unit) {
+@Composable internal fun JournalMap(entries: List<Entry>, service: PlaceService, androidKey: String, privacyAgreed: Boolean, agreePrivacy: () -> Unit, state: JournalMapState, choose: (JournalCollection) -> Unit) {
     val context = LocalContext.current
     val located = remember(entries) { entries.filter { it.location != null && !it.deleted } }
-    var gps by remember { mutableStateOf(recentCurrentLocation(context)) }
-    var center by remember { mutableStateOf<GeoPoint?>(null) }
-    var userMoved by remember { mutableStateOf(false) }
-    var locating by remember { mutableStateOf(false) }
-    var locationError by remember { mutableStateOf("") }
-    var locationAttempt by remember { mutableIntStateOf(0) }
+    var gps by state::gps
+    var center by state::center
+    var userMoved by state::userMoved
+    var locating by state::locating
+    var locationError by state::locationError
+    var locationAttempt by state::locationAttempt
+    if (!state.initialized) {
+        gps = recentCurrentLocation(context)
+        val first = located.firstOrNull()?.location
+        state.automatic = if (first?.coordinateSystem == CoordinateSystem.GCJ02) PlaceProvider.AMAP else PlaceProvider.defaultFor(first)
+        state.initialized = true
+    }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
         if (granted.values.any { it }) locationAttempt++
         else locationError = "未允许定位，显示日记位置"
     }
     val locate: () -> Unit = {
         userMoved = false
+        state.recenter = true
         center = null
         locationError = ""
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) locationAttempt++
         else permission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
     }
-    LaunchedEffect(Unit) { locate() }
+    LaunchedEffect(Unit) { if (!state.requested) { state.requested = true; locate() } }
     LaunchedEffect(locationAttempt) {
-        if (locationAttempt == 0) return@LaunchedEffect
+        if (locationAttempt == 0 || state.finishedAttempt == locationAttempt) return@LaunchedEffect
         locating = true
         try {
             recentCurrentLocation(context)?.let { gps = it }
@@ -151,40 +162,42 @@ internal data class JournalCollection(val title: String, val ids: List<String>, 
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { locationError = "定位不可用，请检查系统定位设置" }
         finally { locating = false }
+        state.finishedAttempt = locationAttempt
     }
-    var provider by remember { mutableStateOf<PlaceProvider?>(null) }
-    var automatic by remember {
-        val first = located.firstOrNull()?.location
-        mutableStateOf(if (first?.coordinateSystem == CoordinateSystem.GCJ02) PlaceProvider.AMAP else PlaceProvider.defaultFor(first))
-    }
+    var provider by state::provider
+    var automatic by state::automatic
     val reference = gps ?: located.firstOrNull()?.location
     LaunchedEffect(reference?.coordinateKey()) {
         reference?.let { point ->
+            if (state.resolvedReference == point.coordinateKey()) return@LaunchedEffect
             try { automatic = if (point.coordinateSystem == CoordinateSystem.GCJ02) PlaceProvider.AMAP else service.defaultProvider(point) }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* Keep the known-region default when system geocoding is unavailable. */ }
+            state.resolvedReference = point.coordinateKey()
         }
     }
     val active = provider ?: automatic
-    var points by remember { mutableStateOf(emptyList<JournalMapPoint>()) }
+    var points by state::points
     val locations = remember(located) { located.groupBy { it.location!!.coordinateKey() }.values.toList() }
-    var completed by remember { mutableIntStateOf(0) }
-    var loading by remember { mutableStateOf(false) }
-    var failures by remember { mutableIntStateOf(0) }
-    var retry by remember { mutableIntStateOf(0) }
+    var completed by state::completed
+    var loading by state::loading
+    var failures by state::failures
+    var retry by state::retry
     val ready = if (active == PlaceProvider.AMAP) androidKey.isNotBlank() && privacyAgreed else BuildConfig.GOOGLE_MAPS_CONFIGURED
     LaunchedEffect(gps, active, ready, locationAttempt) {
         val point = gps ?: return@LaunchedEffect
-        if (!ready) return@LaunchedEffect
+        if (!ready || (!state.recenter && state.camera != null)) return@LaunchedEffect
         try {
             val mapped = service.mapCoordinate(point, active)
-            if (!userMoved) center = mapped
+            if (!userMoved) { center = mapped; state.recenter = false }
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { locationError = "当前位置转换失败，可重试定位或切换地图服务" }
     }
     LaunchedEffect(located, active, ready, retry) {
-        points = emptyList(); failures = 0; completed = 0
-        if (!ready) return@LaunchedEffect
+        val signature = located.map { it.id to it.location!!.coordinateKey() }
+        if (!ready || (signature == state.loadedLocations && active == state.loadedProvider && retry == state.loadedRetry)) return@LaunchedEffect
+        if (active != state.loadedProvider) points = emptyList()
+        failures = 0; completed = 0
         loading = true
         val converted = mutableListOf<JournalMapPoint>()
         try {
@@ -197,6 +210,9 @@ internal data class JournalCollection(val title: String, val ids: List<String>, 
                 completed += batch.size
                 points = converted.toList()
             }
+            state.loadedLocations = signature
+            state.loadedProvider = active
+            state.loadedRetry = retry
         } finally { loading = false }
     }
     val pick: (List<String>) -> Unit = { ids ->
@@ -208,7 +224,7 @@ internal data class JournalCollection(val title: String, val ids: List<String>, 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("${located.size} 篇有位置 · ${entries.size - located.size} 篇无位置", Modifier.weight(1f), fontSize = 12.sp)
-            PlaceProvider.entries.forEach { item -> TextButton(onClick = { userMoved = false; provider = item }, enabled = active != item) { Text(item.label) } }
+            PlaceProvider.entries.forEach { item -> TextButton(onClick = { userMoved = false; state.recenter = true; state.camera = null; provider = item }, enabled = active != item) { Text(item.label) } }
         }
         if (locationError.isNotBlank()) Text(locationError, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -221,8 +237,8 @@ internal data class JournalCollection(val title: String, val ids: List<String>, 
                 }
                 active == PlaceProvider.GOOGLE && !BuildConfig.GOOGLE_MAPS_CONFIGURED -> Text("Google 地图暂不可用，可切换高德地图", Modifier.align(Alignment.Center).padding(24.dp))
                 else -> key(active) {
-                    if (active == PlaceProvider.AMAP) AmapMapPanel(androidKey, center?.takeIf { it.coordinateSystem == CoordinateSystem.GCJ02 }, { userMoved = true }, Modifier.fillMaxSize(), points = points, pick = pick, fitPoints = !userMoved && gps == null)
-                    else GoogleMapPanel(center?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 }, { userMoved = true }, Modifier.fillMaxSize(), points = points, pick = pick, fitPoints = !userMoved && gps == null)
+                    if (active == PlaceProvider.AMAP) AmapMapPanel(androidKey, center?.takeIf { it.coordinateSystem == CoordinateSystem.GCJ02 }, { userMoved = true }, Modifier.fillMaxSize(), points = points, pick = pick, fitPoints = !userMoved && gps == null && state.camera == null, initialCamera = state.camera, cameraChanged = { if (center != null || points.isNotEmpty() || userMoved) state.camera = it })
+                    else GoogleMapPanel(center?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 }, { userMoved = true }, Modifier.fillMaxSize(), points = points, pick = pick, fitPoints = !userMoved && gps == null && state.camera == null, initialCamera = state.camera, cameraChanged = { if (center != null || points.isNotEmpty() || userMoved) state.camera = it })
                 }
             }
             FilledTonalIconButton(onClick = locate, enabled = !locating, modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 36.dp)) {

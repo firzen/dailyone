@@ -13,6 +13,7 @@ import java.io.IOException
 
 class DavClientTest {
     private lateinit var server: MockWebServer
+    private lateinit var client: OkHttpClient
     private lateinit var dav: DavClient
     private val id = "12345678-1234-1234-1234-123456789abc"
     @Before fun setUp() {
@@ -22,7 +23,7 @@ class DavClientTest {
         server = MockWebServer()
         server.useHttps(serverCerts.sslSocketFactory(), false)
         server.start()
-        val client = OkHttpClient.Builder().sslSocketFactory(clientCerts.sslSocketFactory(), clientCerts.trustManager)
+        client = OkHttpClient.Builder().sslSocketFactory(clientCerts.sslSocketFactory(), clientCerts.trustManager)
             .followRedirects(false).followSslRedirects(false).build()
         dav = DavClient(CloudConfig(server.url("/dav/").toString(), "user", "password"), client)
     }
@@ -34,6 +35,14 @@ class DavClientTest {
         assertEquals("/dav/DailyOne/entries/", server.takeRequest().path)
         assertEquals("/dav/DailyOne/photos/", server.takeRequest().path)
         assertEquals("/dav/DailyOne/notebooks/", server.takeRequest().path)
+    }
+    @Test fun pastedUsernameWhitespaceIsRemovedWithoutChangingPassword() {
+        val pasted = DavClient(CloudConfig(server.url("/dav/").toString(), " user\n", " password "), client)
+        repeat(4) { server.enqueue(MockResponse().setResponseCode(201)) }
+        pasted.ensureCollections()
+        repeat(4) {
+            assertEquals(okhttp3.Credentials.basic("user", " password "), server.takeRequest().getHeader("Authorization"))
+        }
     }
     @Test fun notebookWritesUseConditionalEtagsAndVideoStreamsKeepMime() {
         val book = Notebook(id = id, name = "宝宝", etag = "\"old\"")
@@ -75,6 +84,7 @@ class DavClientTest {
         val request = server.takeRequest()
         assertEquals("1", request.getHeader("Depth"))
         assertEquals("application/xml", request.getHeader("Content-Type"))
+        assertTrue(request.body.readUtf8().contains("<d:allprop/>"))
     }
     @Test fun refusesXmlExternalEntities() {
         server.enqueue(MockResponse().setResponseCode(207).setBody("""
@@ -119,6 +129,62 @@ class DavClientTest {
             dav.downloadPhoto("$id.png", destination)
             assertArrayEquals(data, destination.readBytes())
         } finally { source.delete(); destination.delete() }
+    }
+
+    @Test fun missingPutEtagIsAcceptedOnlyWhenDownloadedBytesMatch() {
+        val entry = Entry(id = id, body = "uploaded", etag = "old")
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setHeader("ETag", "bare-nutstore-tag").setBody(entry.json()))
+        assertEquals("bare-nutstore-tag", dav.putEntry(entry))
+        assertEquals("old", server.takeRequest().getHeader("If-Match"))
+        assertEquals("GET", server.takeRequest().method)
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setHeader("ETag", "someone-elses-version").setBody(entry.copy(body = "concurrent").json()))
+        assertThrows(IOException::class.java) { dav.putEntry(entry) }
+    }
+    private fun nutstoreClient(): DavClient {
+        val redirected = client.newBuilder().addInterceptor { chain ->
+            chain.proceed(chain.request().newBuilder().url(chain.request().url.newBuilder()
+                .host("localhost").port(server.port).build()).build())
+        }.build()
+        return DavClient(CloudConfig("https://dav.jianguoyun.com/dav/", "user", "password"), redirected)
+    }
+    @Test fun nutstoreCreationUsesNonOverwritingMoveAndVerifiesContent() {
+        val entry = Entry(id = id, body = "new")
+        server.enqueue(MockResponse().setResponseCode(201))
+        server.enqueue(MockResponse().setResponseCode(201))
+        server.enqueue(MockResponse().setResponseCode(404)) // staging cleanup
+        server.enqueue(MockResponse().setHeader("ETag", "version").setBody(entry.json()))
+        assertEquals("version", nutstoreClient().putEntry(entry))
+        val upload = server.takeRequest()
+        assertTrue(upload.path!!.endsWith(".upload"))
+        val move = server.takeRequest()
+        assertEquals("MOVE", move.method)
+        assertEquals("F", move.getHeader("Overwrite"))
+        assertEquals("https://dav.jianguoyun.com/dav/DailyOne/entries/$id.json", move.getHeader("Destination"))
+        assertEquals("DELETE", server.takeRequest().method)
+        assertEquals("GET", server.takeRequest().method)
+    }
+    @Test fun nutstoreCreationCollisionPreservesRemoteAndCleansStaging() {
+        server.enqueue(MockResponse().setResponseCode(201))
+        server.enqueue(MockResponse().setResponseCode(409))
+        server.enqueue(MockResponse().setResponseCode(204))
+        assertThrows(IOException::class.java) { nutstoreClient().putEntry(Entry(id = id)) }
+        val upload = server.takeRequest()
+        assertEquals("MOVE", server.takeRequest().method)
+        val cleanup = server.takeRequest()
+        assertEquals("DELETE", cleanup.method)
+        assertEquals(upload.path, cleanup.path)
+    }
+
+    @Test fun photoListingRecognizesCompletedMediaWithoutRequiringEtags() {
+        server.enqueue(MockResponse().setResponseCode(207).setBody("""
+            <d:multistatus xmlns:d="DAV:">
+            <d:response><d:href>/dav/DailyOne/photos/$id.mp4</d:href><d:propstat><d:prop/></d:propstat></d:response>
+            <d:response><d:href>/dav/DailyOne/photos/$id.mp4.upload</d:href></d:response>
+            </d:multistatus>
+        """.trimIndent()))
+        assertEquals(setOf("$id.mp4"), dav.listPhotos())
     }
 
 }

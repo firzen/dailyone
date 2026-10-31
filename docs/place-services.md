@@ -6,6 +6,8 @@
 
 ## Key
 
+真实 Key 只保存在本机或设备端，不提交到 GitHub。构建配置示例见根目录 `local.properties.example`，复制为已被 Git 忽略的 `local.properties` 后填写 Google 地图 Key。高德 Android/Web Key 和 Google 地点服务 Key 使用设备端独立加密配置，不需要写入仓库文件。`local.properties` 的备份、临时 `*bootstrap-key*` 文件及 APK/AAB 也已忽略；安装包可能包含构建注入的地图 Key，不应作为无密钥源码附件提交。
+
 在高德控制台申请 **Web服务** Key，非 Android SDK Key。设置中保存后使用 Android Keystore AES-GCM 加密到独立偏好文件，不写入源码、日记 JSON 或 WebDAV。现有云存储凭据的命名空间和密钥别名保持兼容。错误信息按高德 infocode 分类，不回显 Key 或完整请求 URL。
 
 ## 坐标
@@ -57,7 +59,7 @@ Google 附近搜索不指定类型、半径 1 公里、DISTANCE 排序，每次�
 
 Google Cloud 项目需关联结算，并启用 Maps SDK for Android、Places API (New)、Geocoding API。
 
-- Android 地图 Key：限制到 `com.firzen.dailyone` 及安装包签名 SHA1，并只允许 Maps SDK for Android。写入已忽略的 `local.properties` 中 `google.maps.api.key=...`，或设置本地环境变量 `DAILYONE_GOOGLE_MAPS_KEY`，也可使用 Gradle 属性 `GOOGLE_MAPS_API_KEY`。构建注入标准 Android Manifest 元数据；源码和仓库不含实际 Key。地图 Key 变更后需要重建安装包。
+- Android 地图 Key：限制到 `com.firzen.dailyone` 及安装包签名 SHA1，并只允许 Maps SDK for Android。写入已忽略的 `local.properties` 中 `google.maps.api.key=...`，或设置本地环境变量 `DAILYONE_GOOGLE_MAPS_KEY`。如使用 Gradle 属性 `GOOGLE_MAPS_API_KEY`，仅通过本地命令参数或用户目录 `~/.gradle/gradle.properties` 提供，不要写入仓库根目录的 `gradle.properties`。构建注入标准 Android Manifest 元数据；源码和仓库不含实际 Key。地图 Key 变更后需要重建安装包。
 - 地点服务 Key：API 限制为 Places API (New) 和 Geocoding API，在 App 设置中填写；通过现有独立 Keystore 加密存储，不写入日记或同步。当前为个人客户端直接调用 REST API，不使用服务器 IP 或网页来源限制。正式扩展服务端时可迁移到受控代理。
 - Key 缺失或无权限分别显示 Google 配置错误；不回显服务器错误正文、密钥或请求 URL。
 

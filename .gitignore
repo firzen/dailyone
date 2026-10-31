@@ -3,6 +3,12 @@
 .idea/
 **/build/
 local.properties
+local.properties.*
+!local.properties.example
+# Local map credential bootstrap files and generated packages
+*bootstrap-key*
+*.apk
+*.aab
 *.iml
 .DS_Store
 *.jks

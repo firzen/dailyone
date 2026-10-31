@@ -23,6 +23,8 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
     val notebooks = MutableStateFlow<List<Notebook>>(emptyList())
     val entries = MutableStateFlow<List<Entry>>(emptyList())
     val lock = Mutex()
+    val syncLock = Mutex()
+    val editingId = java.util.concurrent.atomic.AtomicReference<String?>(null)
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE entries (id TEXT PRIMARY KEY, document TEXT NOT NULL, dirty INTEGER NOT NULL, etag TEXT, candidate INTEGER NOT NULL DEFAULT 0, scan_day TEXT)")
         createScanTable(db)
@@ -166,7 +168,7 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
             val unchangedCustomName = point.nameOrigin == PlaceNameOrigin.CUSTOM && stored?.nameOrigin == PlaceNameOrigin.CUSTOM && point.name == stored.name && point.poiId == stored.poiId
             if (stored != null && point.sameCoordinates(stored) && (automaticSnapshot && stored.nameOrigin != PlaceNameOrigin.LEGACY || unchangedCustomName || point.name.isBlank() && point.address.isBlank())) stored else point
         }
-        write(resolved.copy(photoLocations = metadata.filterKeys { it in resolved.photos }, recordedLocation = manual))
+        write(resolved.copy(photoLocations = metadata.filterKeys { it in resolved.photos }, recordedLocation = manual, etag = latest?.etag ?: resolved.etag))
     } }
     suspend fun resetSyncBaseline() = lock.withLock { withContext(Dispatchers.IO) {
         writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL")

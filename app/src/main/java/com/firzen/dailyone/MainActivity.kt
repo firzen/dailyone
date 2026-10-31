@@ -123,6 +123,11 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     }
     val view = LocalView.current
     val dark = isSystemInDarkTheme()
+    DisposableEffect(view, vm.scanProgress.running, vm.geoProgress.running, vm.importing) {
+        val previous = view.keepScreenOn
+        view.keepScreenOn = previous || vm.scanProgress.running || vm.geoProgress.running || vm.importing
+        onDispose { view.keepScreenOn = previous }
+    }
     SideEffect {
         WindowCompat.getInsetsController((view.context as Activity).window, view).isAppearanceLightStatusBars = draft != null && !dark
     }

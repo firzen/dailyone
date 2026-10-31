@@ -47,7 +47,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val result = worker.run { geoProgress = it.copy(running = true) }
                 draft = draft?.let(store::resolvePhotos)
-                events.send("原图恢复${if (worker.stop.get()) "已停止" else "完成"}：替换 ${result.replaced} 张，定位补全 ${result.filled} 次，未匹配 ${result.remaining} 张")
+                events.send("原图恢复${if (worker.stop.get()) "已停止" else "完成"}：替换 ${result.replaced} 张，未匹配 ${result.remaining} 张；可用的照片定位已载入")
             } catch (e: Exception) { events.send(e.message ?: "原图恢复中断，已有结果保留") }
             finally { geoBackfill = null; geoProgress = geoProgress.copy(running = false) }
         }

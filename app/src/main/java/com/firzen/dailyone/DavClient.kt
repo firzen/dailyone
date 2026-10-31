@@ -30,10 +30,10 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
         if (path.endsWith('/')) addPathSegment("")
     }.build()
     private fun request(method: String, path: String, data: ByteArray? = null, headers: Map<String, String> = emptyMap()): okhttp3.Response {
-        val body = data?.toRequestBody("application/octet-stream".toMediaType())
+        val body = data?.toRequestBody((headers["Content-Type"] ?: "application/octet-stream").toMediaType())
         val b = Request.Builder().url(url(path)).header("Authorization", auth)
         headers.forEach { (k, v) -> b.header(k, v) }
-        return client.newCall(b.method(method, body)).execute()
+        return client.newCall(b.method(method, body).build()).execute()
     }
     fun ensureCollections() {
         listOf("", "entries/", "photos/").forEach { path ->
@@ -48,13 +48,20 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
             if (r.code != 207) fail(r.code)
             bounded(r, 8 * 1024 * 1024)
         }
+        // Android's DOM implementation does not support Xerces-specific security flags.
+        // Decode strictly, reject DTDs before parsing, and parse a character stream so an
+        // alternate byte encoding cannot bypass that check. WebDAV XML must be UTF-8.
+        val xmlText = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString().removePrefix("\uFEFF")
+        require(!xmlText.contains("<!DOCTYPE", ignoreCase = true) && !xmlText.contains("<!ENTITY", ignoreCase = true)) {
+            "WebDAV XML 不允许包含 DTD 或实体声明"
+        }
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = true
-            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            setFeature("http://xml.org/sax/features/external-general-entities", false)
-            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+            isExpandEntityReferences = false
         }
-        val doc = factory.newDocumentBuilder().parse(bytes.inputStream())
+        val builder = factory.newDocumentBuilder()
+        builder.setEntityResolver { _, _ -> throw org.xml.sax.SAXException("不允许外部 XML 实体") }
+        val doc = builder.parse(org.xml.sax.InputSource(java.io.StringReader(xmlText)))
         val responses = doc.getElementsByTagNameNS("DAV:", "response")
         return buildMap {
             for (i in 0 until responses.length) {
@@ -80,7 +87,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
     }
     fun putEntry(entry: Entry): String? {
         val condition = entry.etag?.let { mapOf("If-Match" to it) } ?: mapOf("If-None-Match" to "*")
-        return request("PUT", "entries/${entry.id}.json", entry.json().toByteArray(Charsets.UTF_8), condition).use { r ->
+        return request("PUT", "entries/${entry.id}.json", entry.json().toByteArray(Charsets.UTF_8), condition + ("Content-Type" to "application/json; charset=utf-8")).use { r ->
             if (r.code == 412) throw IOException("云端日记刚被修改，请再次同步；本地修改已保留")
             if (!r.isSuccessful) fail(r.code)
             r.header("ETag")?.takeUnless { it.startsWith("W/") }
@@ -88,7 +95,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
     }
     fun putPhoto(name: String, data: ByteArray) {
         require(validPhoto(name))
-        request("PUT", "photos/$name", data, mapOf("If-None-Match" to "*")).use { r ->
+        request("PUT", "photos/$name", data, mapOf("If-None-Match" to "*", "Content-Type" to "image/jpeg")).use { r ->
             if (!r.isSuccessful && r.code != 412) fail(r.code)
         }
     }

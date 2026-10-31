@@ -53,13 +53,20 @@ class DavClientTest {
             </d:response></d:multistatus>
         """.trimIndent()))
         assertEquals(mapOf(id to "\"v1\""), dav.listEntries())
-        assertEquals("1", server.takeRequest().getHeader("Depth"))
+        val request = server.takeRequest()
+        assertEquals("1", request.getHeader("Depth"))
+        assertEquals("application/xml", request.getHeader("Content-Type"))
     }
     @Test fun refusesXmlExternalEntities() {
         server.enqueue(MockResponse().setResponseCode(207).setBody("""
             <!DOCTYPE x [<!ENTITY external SYSTEM "file:///etc/passwd">]>
             <d:multistatus xmlns:d="DAV:">&external;</d:multistatus>
         """.trimIndent()))
+        assertThrows(Exception::class.java) { dav.listEntries() }
+    }
+    @Test fun alternateByteEncodingCannotBypassDtdRejection() {
+        val xml = "<!DOCTYPE x [<!ENTITY e SYSTEM \"file:///etc/passwd\">]><x>&e;</x>"
+        server.enqueue(MockResponse().setResponseCode(207).setBody(okio.Buffer().write(xml.toByteArray(Charsets.UTF_16))))
         assertThrows(Exception::class.java) { dav.listEntries() }
     }
     @Test fun remoteEntryIdMustMatchRequestedFile() {

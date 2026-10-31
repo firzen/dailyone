@@ -94,14 +94,6 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         if (entry.scanDay == "unknown") { vm.open(entry); return }
         vm.review(entry.id, true)
     }
-    val backfillPermissions = (if (Build.VERSION.SDK_INT >= 34) arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-        else if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.READ_MEDIA_IMAGES) else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)) +
-        (if (Build.VERSION.SDK_INT >= 29) arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION) else emptyArray())
-    val backfillLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { vm.startGeoBackfill() }
-    val backfill = {
-        if (backfillPermissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }) vm.startGeoBackfill()
-        else backfillLauncher.launch(backfillPermissions)
-    }
     val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         if (grants.values.any { it }) vm.recordCurrentLocation() else vm.locationPermissionDenied()
     }
@@ -193,7 +185,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             if (settingsOpen) {
                 ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
-                    CloudForm(vm.config, vm.busy || vm.shopProgress.running, vm.settingsError, vm.amapKey, vm::updateAmapKey, vm.amapAndroidKey, vm::updateAndroidKey, { settingsOpen = false; vm.startShopRefresh() }, vm.photoTimePreference, vm::updatePhotoTimePreference, { settingsOpen = false; startScan() }, { settingsOpen = false; backfill() }, { vm.configure(it) { settingsOpen = false } })
+                    CloudForm(vm.config, vm.busy || vm.shopProgress.running, vm.settingsError, vm.amapKey, vm::updateAmapKey, vm.amapAndroidKey, vm::updateAndroidKey, { settingsOpen = false; vm.startShopRefresh() }, vm.photoTimePreference, vm::updatePhotoTimePreference, { settingsOpen = false; startScan() }, { vm.configure(it) { settingsOpen = false } })
                 }
             }
         }
@@ -300,9 +292,13 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 }
                 if (entry.photos.isNotEmpty()) PhotoThumbnails(entry.photos, media, hasText)
             }
-            Row(Modifier.padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("日记", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
-                Text(" · " + if (entry.scanDay == "unknown") "日期待确认" else date(entry.createdAt, "HH:mm"), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                Text(" · " + if (entry.scanDay == "unknown") "日期待确认" else date(entry.createdAt, "HH:mm"), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1)
+                entry.location?.let { it.name.ifBlank { it.address } }?.takeIf { it.isNotBlank() }?.let { location ->
+                    Text(" · $location", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
     }
@@ -437,14 +433,13 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 }
 
 @Composable private fun CloudForm(config: CloudConfig, busy: Boolean, error: String?, amapKey: String, updateAmapKey: (String) -> String?, androidMapKey: String, updateAndroidKey: (String) -> String?, refreshShops: () -> Unit, photoTimePreference: PhotoTimePreference,
-    updatePhotoTimePreference: (PhotoTimePreference) -> Unit, startScan: () -> Unit, backfill: () -> Unit, save: (CloudConfig) -> Unit) {
+    updatePhotoTimePreference: (PhotoTimePreference) -> Unit, startScan: () -> Unit, save: (CloudConfig) -> Unit) {
     var url by remember(config) { mutableStateOf(config.url) }
     var username by remember(config) { mutableStateOf(config.username) }
     var password by remember(config) { mutableStateOf(config.password) }
     Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("设置", fontSize = 22.sp, fontWeight = FontWeight.Medium)
         OutlinedButton(onClick = startScan, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("扫描相册 · 生成人物日记") }
-        OutlinedButton(onClick = backfill, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("恢复旧照片原图并补全定位") }
         var photoTimeMenu by remember { mutableStateOf(false) }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("添加图片时", modifier = Modifier.weight(1f), fontSize = 15.sp)

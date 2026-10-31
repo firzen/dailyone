@@ -32,19 +32,20 @@ import androidx.compose.ui.window.DialogProperties
     androidKey: String = "", privacyAgreed: Boolean = false, agreePrivacy: () -> Unit = {},
     mapCenter: GeoPoint? = null, mapPick: GeoPoint? = null, nearby: List<GeoPoint> = emptyList(), resolvingMap: Boolean = false,
     focusMap: (GeoPoint) -> Unit = {}, moveMap: (GeoPoint) -> Unit = {}, distanceCenter: GeoPoint? = null) {
-    val effectiveRegion = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(current ?: existing) else region
+    val effectiveRegion = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(distanceCenter ?: existing ?: current) else region
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     var query by remember { mutableStateOf("") }
-    var selected by remember { mutableStateOf<GeoPoint?>(null) }
-    var name by remember { mutableStateOf("") }
+    var selected by remember { mutableStateOf(existing ?: current) }
+    var name by remember { mutableStateOf((existing ?: current)?.let { it.name.ifBlank { it.address } }.orEmpty()) }
     var userSelected by remember { mutableStateOf(false) }
+    var preferCurrent by remember { mutableStateOf(false) }
     var editName by remember { mutableStateOf(false) }
     fun choose(point: GeoPoint, focus: Boolean = true) {
         selected = point; name = point.name.ifBlank { point.address }; userSelected = true
-        if (focus) focusMap(point)
+        if (focus) { query = ""; focusMap(point) }
     }
-    LaunchedEffect(current) { if (current != null && !userSelected) { selected = current; name = current.name.ifBlank { current.address } } }
+    LaunchedEffect(current) { if (current != null && !userSelected && (existing == null || preferCurrent)) { selected = current; name = current.name.ifBlank { current.address } } }
     LaunchedEffect(mapPick) { if (mapPick != null) choose(mapPick, false) }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Surface(Modifier.fillMaxSize()) {
@@ -68,7 +69,7 @@ import androidx.compose.ui.window.DialogProperties
                             DropdownMenuItem(text = { Text(item.label) }, onClick = { menu = false; changeRegion(item) })
                         } }
                     }
-                    val area = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(current ?: existing) else region
+                    val area = if (region == PlaceRegion.AUTO) PlaceRegion.fromPoint(distanceCenter ?: existing ?: current) else region
                     if (area == PlaceRegion.MAINLAND || area == null) OutlinedTextField(city, changeCity,
                         Modifier.width(136.dp), singleLine = true, placeholder = { Text("搜索城市") })
                 }
@@ -86,7 +87,7 @@ import androidx.compose.ui.window.DialogProperties
                             Icon(Icons.Outlined.LocationOn, "地图中心选点", Modifier.align(Alignment.Center).size(38.dp).offset(y = (-18).dp), tint = MaterialTheme.colorScheme.primary)
                         }
                     }
-                    FilledTonalIconButton(onClick = { userSelected = false; selected = current; name = current?.name.orEmpty(); query = ""; retryCurrent() }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp), enabled = !locating) {
+                    FilledTonalIconButton(onClick = { preferCurrent = true; userSelected = false; selected = current; name = current?.name.orEmpty(); query = ""; retryCurrent() }, modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp), enabled = !locating) {
                         Icon(Icons.Outlined.MyLocation, "回到当前位置")
                     }
                 }
@@ -97,10 +98,12 @@ import androidx.compose.ui.window.DialogProperties
                         Text(if (results.isNotEmpty()) "搜索结果 · 距离由近到远" else "附近店铺与地点", Modifier.padding(6.dp), fontWeight = FontWeight.Medium)
                         if (locating) Text("正在获取当前位置…", Modifier.padding(6.dp), fontSize = 12.sp)
                     }
-                    if (results.isEmpty() && existing != null && (current == null || !existing.sameCoordinates(current))) item { PlaceChoice(existing, selected, "日记现有位置") { choose(existing) } }
-                    if (results.isEmpty() && current != null) item { PlaceChoice(current, selected, "当前位置") { choose(current) } }
+                    if (results.isEmpty() && existing != null) item { PlaceChoice(existing, selected, "日记现有位置") { choose(existing) } }
                     val candidates = if (results.isNotEmpty()) results else nearby
                     val ordered = if (distanceCenter != null && candidates.all { it.coordinateSystem == distanceCenter.coordinateSystem }) nearestPlaces(candidates, distanceCenter) else candidates
+                    if (!resolvingMap && !locating && error == null && results.isEmpty() && nearby.isEmpty()) item {
+                        Text("附近暂无店铺，可拖动地图或搜索地点", Modifier.padding(6.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     items(ordered) { point ->
                         val distance = distanceCenter?.takeIf { it.coordinateSystem == point.coordinateSystem }?.let { distanceLabel(distanceMeters(point, it)) }.orEmpty()
                         PlaceChoice(point, selected, distance) { choose(point) }

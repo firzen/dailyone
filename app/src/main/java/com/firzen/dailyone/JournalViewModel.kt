@@ -76,35 +76,38 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     private var mapRevision = 0
     private var mapUserInteracted = false
     fun userFocusMap(point: GeoPoint) { mapUserInteracted = true; focusMap(point) }
-    fun focusMap(point: GeoPoint, loadNearby: Boolean = false) {
+    fun focusMap(point: GeoPoint) {
         val session = placeSession; val revision = ++mapRevision
-        mapJob?.cancel(); resolvingMap = false
+        mapJob?.cancel(); resolvingMap = true; nearbyPlaces = emptyList(); mapPick = null; placeError = null
+        searchRevision++; searchJob?.cancel(); searchingPlaces = false; placeResults = emptyList()
         mapJob = viewModelScope.launch {
             try {
                 val mapped = places.mapCoordinate(point)
                 if (session != placeSession || revision != mapRevision) return@launch
                 mapCenter = mapped; mapAnchor = mapped
-                if (loadNearby) {
-                    val nearby = places.nearby(mapped)
-                    if (session == placeSession && revision == mapRevision) nearbyPlaces = nearby
-                }
+                if (!cityWasEdited) searchCity = point.city
+                val nearby = places.nearby(mapped)
+                if (session == placeSession && revision == mapRevision) nearbyPlaces = nearby
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession && revision == mapRevision) placeError = e.message ?: "地图位置加载失败" }
+            finally { if (session == placeSession && revision == mapRevision) resolvingMap = false }
         }
     }
     fun prepareCurrentMap() {
         mapUserInteracted = false; mapPick = null; placeResults = emptyList()
         searchRevision++; searchJob?.cancel(); searchingPlaces = false
-        currentPlace?.let { focusMap(it, true) }
+        currentPlace?.let { focusMap(it) }
     }
     fun pickMapCenter(point: GeoPoint) {
-        mapUserInteracted = true; mapAnchor = point; placeResults = emptyList(); searchRevision++; searchJob?.cancel(); searchingPlaces = false
+        mapUserInteracted = true; mapAnchor = point; nearbyPlaces = emptyList(); placeResults = emptyList(); searchRevision++; searchJob?.cancel(); searchingPlaces = false
         val session = placeSession; val revision = ++mapRevision
         mapJob?.cancel(); mapPick = null; resolvingMap = true; placeError = null
         mapJob = viewModelScope.launch {
             try {
                 val named = places.reverse(point) ?: error("未找到该位置的地址")
                 check(PlaceRegion.fromPoint(named)?.provider == PlaceProvider.AMAP) { "该地区需要 Google 地图，后续接入" }
+                if (session != placeSession || revision != mapRevision) return@launch
+                mapPick = named; mapAnchor = named
                 val nearby = places.nearby(named)
                 if (session == placeSession && revision == mapRevision) { mapPick = named; mapAnchor = named; nearbyPlaces = nearby; if (!cityWasEdited) searchCity = named.city }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -158,8 +161,10 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         locationPickerOpen = true; placeSession++; currentPlace = null
         placeResults = emptyList(); placeError = null
         searchRegion = PlaceRegion.AUTO; searchCity = ""; cityWasEdited = false
-        mapCenter = null; mapAnchor = null; mapPick = null; nearbyPlaces = emptyList(); resolvingMap = false; mapUserInteracted = false
-        draft?.location?.let { focusMap(it, true) }
+        mapCenter = null; mapAnchor = null; mapPick = null; nearbyPlaces = emptyList(); resolvingMap = false; mapUserInteracted = draft?.location != null
+        searchRevision++; searchJob?.cancel(); searchingPlaces = false
+        searchCity = draft?.location?.city.orEmpty()
+        draft?.location?.let { focusMap(it) }
     }
     fun closeLocationPicker() {
         locationPickerOpen = false; placeSession++
@@ -179,8 +184,8 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                 val named = try { places.reverse(point) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
                 if (session == placeSession) {
                     currentPlace = named ?: point
-                    if (!cityWasEdited) searchCity = currentPlace?.takeIf { searchRegion == PlaceRegion.AUTO || PlaceRegion.fromPoint(it) == searchRegion }?.city.orEmpty()
-                    if (!mapUserInteracted) focusMap(currentPlace ?: point, true)
+                    if (!cityWasEdited && !mapUserInteracted) searchCity = currentPlace?.takeIf { searchRegion == PlaceRegion.AUTO || PlaceRegion.fromPoint(it) == searchRegion }?.city.orEmpty()
+                    if (!mapUserInteracted) focusMap(currentPlace ?: point)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (session == placeSession) placeError = e.message ?: "获取当前位置失败" }

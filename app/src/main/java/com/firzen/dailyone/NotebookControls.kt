@@ -1,6 +1,9 @@
 package com.firzen.dailyone
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.ui.Alignment
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.MenuBook
@@ -22,19 +25,22 @@ import androidx.compose.ui.unit.dp
         }
     }
 }
-@Composable internal fun NotebookMenu(books: List<Notebook>, selected: String?, enabled: Boolean, choose: (String?) -> Unit, save: (String, String?) -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+@Composable internal fun NotebookMenu(books: List<Notebook>, selected: String?, enabled: Boolean, choose: (String?) -> Unit, save: (String, String?) -> Unit, onDoubleClick: (() -> Unit)? = null) {
     var dialog by remember { mutableStateOf(false) }
     var rename by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     var expanded by remember { mutableStateOf(false) }
     Box {
-        TextButton(onClick = { expanded = true }, enabled = enabled,
-            colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = Color.White.copy(alpha = .5f))) {
+        CompositionLocalProvider(LocalContentColor provides if (enabled) Color.White else Color.White.copy(alpha = .5f)) {
+        Row(Modifier.heightIn(min = 48.dp).combinedClickable(enabled = enabled, onClick = { expanded = true }, onDoubleClick = onDoubleClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.MenuBook, null, Modifier.size(22.dp))
             Text(books.firstOrNull { it.id == selected }?.name ?: "全部日记",
                 Modifier.padding(start = 10.dp).weight(1f, fill = false), fontSize = 20.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             Icon(Icons.Outlined.ArrowDropDown, "切换或管理日记本", Modifier.size(22.dp))
+        }
         }
         DropdownMenu(expanded && enabled, { expanded = false }) {
             DropdownMenuItem(text = { Text("全部日记") }, onClick = { expanded = false; choose(null) })

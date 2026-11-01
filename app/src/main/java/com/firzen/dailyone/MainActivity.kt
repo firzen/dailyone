@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import android.app.Activity
 import androidx.core.view.WindowCompat
@@ -55,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import kotlinx.coroutines.launch
 import java.io.File
 import java.time.Instant
 import java.time.ZoneId
@@ -85,6 +87,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     val entries = all.filter { !it.deleted && (vm.selectedNotebook == null || it.notebookId == vm.selectedNotebook) }
     val importPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { it?.let(vm::previewDayOne) }
     val listState = rememberLazyListState()
+    val listScope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var journalView by rememberSaveable { mutableStateOf(JournalView.LIST) }
     var settingsOpen by remember { mutableStateOf(false) }
@@ -158,13 +161,13 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 { entry, retain -> if (retain) keep(entry) else vm.review(entry.id, false) }, selectedIds, toggleSelection,
                 { selectedIds = emptySet() }, { batchDialog = false }, { mergeNotebook = null; batchDialog = true }, {
                     NotebookMenu(books, vm.selectedNotebook, !vm.busy && !vm.loading && !vm.importing,
-                        { vm.selectedNotebook = it; selectedIds = emptySet() }, vm::saveNotebook)
+                        { vm.selectedNotebook = it; selectedIds = emptySet() }, vm::saveNotebook, onDoubleClick = if (journalView == JournalView.LIST) ({ listScope.launch { listState.animateScrollToItem(0) }; Unit }) else null)
                 }, books.associate { it.id to it.name }, browseState, journalView, { journalView = it },
                 vm.amapAndroidKey, vm.mapPrivacyAgreed, vm::agreeMapPrivacy, { collection ->
                     val timestamp = collection.day?.atTime(java.time.LocalTime.now())?.atZone(ZoneId.systemDefault())?.toInstant()?.toEpochMilli() ?: System.currentTimeMillis()
                     vm.open(Entry(createdAt = timestamp, notebookId = vm.selectedNotebook ?: DEFAULT_NOTEBOOK, recordedLocation = collection.location))
                 }, syncing = vm.syncProgress.running || vm.syncProgress.waiting || vm.syncProgress.paused || vm.syncProgress.controlling) }
-            else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete, vm::removePhoto, { keep(it) }, recordLocation, vm.locating, books, vm::addVideos)
+            else Editor(draft, vm.store.mediaDir, vm.saved, vm.importing, vm::change, vm::back, vm::addPhotos, vm::delete, vm::removePhoto, { keep(it) }, recordLocation, vm.locating, books, vm::addVideos, vm::split)
             if (vm.locationPickerOpen && draft != null) LocationPicker(vm.currentPlace, draft.location, vm.placeResults,
                 vm.locating, vm.searchingPlaces, vm.placeError, vm::searchPlaces, { vm.prepareCurrentMap(); fetchCurrentPlace() }, vm::selectPlace, vm::closeLocationPicker,
                 vm.placeProvider, vm.searchCity, vm::updatePlaceProvider, vm::updateSearchCity,
@@ -233,11 +236,20 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     val dark = isSystemInDarkTheme()
     val chrome = if (dark) Color(0xFF252B30) else Color(0xFF333C41)
     val context = LocalContext.current
+    val groups = remember(entries) { entries.groupBy { if (it.scanDay == "unknown") "unknown" else date(it.createdAt, "yyyy-MM") } }
+    val scrollLabels = remember(groups) { buildList {
+        add("顶部")
+        if (entries.isEmpty()) add("暂无日记")
+        groups.forEach { (month, group) ->
+            add(if (month == "unknown") "日期待确认" else date(group.first().createdAt, "yyyy年M月"))
+            group.forEach { add(if (it.scanDay == "unknown") "日期待确认" else date(it.createdAt, "yyyy年M月d日")) }
+        }
+    } }
     val browsePlaces = browseState.places ?: PlaceService(context).also { browseState.places = it }
     browseState.collection?.let { selected -> JournalCollectionSheet(selected, entries, media, { browseState.collection = null },
         open, { browseState.collection = null; createInCollection(selected) }, scroll = browseState.collectionScroll) }
     Column(Modifier.fillMaxSize().background(chrome)) {
-        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(56.dp).doubleTapToTop(listState, view == JournalView.LIST).testTag("journal-list-header").padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (selection.isNotEmpty()) IconButton(onClick = clearSelection) { Icon(Icons.Outlined.Close, "退出多选", tint = Color.White) }
             if (selection.isEmpty()) Box(Modifier.weight(1f)) { notebookMenu() }
             else Text("已选 ${selection.size} 篇", fontSize = 20.sp, color = Color.White, modifier = Modifier.padding(start = 8.dp).weight(1f))
@@ -259,7 +271,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 if (loading) CircularProgressIndicator(Modifier.align(Alignment.Center))
                 else if (view == JournalView.CALENDAR) JournalCalendar(entries, media, browseState) { browseState.selectCollection(it) }
                 else if (view == JournalView.MAP) JournalMap(entries, browsePlaces, androidKey, privacyAgreed, agreePrivacy, browseState.map) { browseState.selectCollection(it) }
-                else LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 9.dp, end = 9.dp, bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                else LazyColumn(Modifier.fillMaxSize().testTag("journal-list"), state = listState, contentPadding = PaddingValues(start = 9.dp, end = 9.dp, bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     item(key = "photo-scan") {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 7.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
@@ -277,7 +289,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                             Text("留下一点文字，以后就能想起今天。", Modifier.padding(top = 9.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    entries.groupBy { if (it.scanDay == "unknown") "unknown" else date(it.createdAt, "yyyy-MM") }.forEach { (month, group) ->
+                    groups.forEach { (month, group) ->
                         item(key = "month-$month") {
                             Text(if (month == "unknown") "日期待确认" else date(group.first().createdAt, "MMMM yyyy"), Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 22.dp), fontSize = 25.sp)
                         }
@@ -296,6 +308,8 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                         }
                     }
                 }
+                if (!loading && view == JournalView.LIST) JournalFastScrollbar(listState, scrollLabels,
+                    Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(top = 8.dp, bottom = 96.dp))
                 FloatingActionButton(onClick = { if (!busy && !loading) create() }, modifier = Modifier.align(Alignment.BottomEnd).padding(18.dp),
                     shape = RoundedCornerShape(18.dp), containerColor = chrome, contentColor = Color.White) {
                     Icon(Icons.Outlined.Add, "写日记", Modifier.size(29.dp))
@@ -373,7 +387,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
 
 @Composable internal fun Editor(entry: Entry, media: File, saved: Boolean, importing: Boolean,
     change: (Entry) -> Unit, back: () -> Unit, addPhotos: (List<android.net.Uri>) -> Unit, delete: () -> Unit,
-    removePhoto: ((String) -> Unit)? = null, keepCandidate: (Entry) -> Unit = {}, recordLocation: () -> Unit = {}, locating: Boolean = false, notebooks: List<Notebook> = emptyList(), addVideos: (List<Uri>) -> Unit = {}) {
+    removePhoto: ((String) -> Unit)? = null, keepCandidate: (Entry) -> Unit = {}, recordLocation: () -> Unit = {}, locating: Boolean = false, notebooks: List<Notebook> = emptyList(), addVideos: (List<Uri>) -> Unit = {}, split: ((Set<String>) -> Unit)? = null) {
     BackHandler(onBack = back)
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents(), addPhotos)
@@ -389,6 +403,11 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     var confirmDate by remember(entry.id) { mutableStateOf(entry.scanDay == "unknown") }
     var confirmDelete by remember { mutableStateOf(false) }
     var entryMenu by remember { mutableStateOf(false) }
+    var splitting by remember(entry.id) { mutableStateOf(false) }
+    if (splitting) {
+        JournalSplitPicker(entry, media, saved && !importing, close = { splitting = false }, split = { split?.invoke(it) })
+        return
+    }
     val latestEntry by rememberUpdatedState(entry)
     val cursor = SolidColor(MaterialTheme.colorScheme.primary)
     val detailScroll = rememberScrollState()
@@ -408,6 +427,8 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 IconButton(onClick = { entryMenu = true }, enabled = saved && !importing) { Icon(Icons.Outlined.MoreVert, "日记选项") }
                 DropdownMenu(expanded = entryMenu, onDismissRequest = { entryMenu = false }) {
                     DropdownMenuItem(text = { Text("修改日期和时间") }, onClick = { entryMenu = false; editing = true; confirmDate = true })
+                    if (!entry.candidate && entry.photos.isNotEmpty() && split != null) DropdownMenuItem(
+                        text = { Text("拆分日记") }, onClick = { entryMenu = false; splitting = true })
                     DropdownMenuItem(text = { Text("删除日记") }, onClick = { entryMenu = false; confirmDelete = true })
                 }
             }

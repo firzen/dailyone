@@ -388,11 +388,32 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             finally { busy = false }
         }
     }
+    fun split(selected: Set<String>) {
+        val original = draft ?: return
+        if (!saved || importing || busy || original.candidate) return
+        importing = true
+        viewModelScope.launch {
+            try {
+                val action = store.split(original.id, selected)
+                val created = action.last().second
+                editingId.set(created.id); draft = created
+                val token = UUID.randomUUID().toString()
+                if (undoActions.size >= 32) undoActions.remove(undoActions.keys.first())
+                undoActions[token] = action
+                events.withUndo("已拆分为新日记", token)
+            } catch (e: Exception) { events.send(e.message ?: "拆分失败") }
+            finally { importing = false }
+        }
+    }
     fun undo(token: String) {
+        if (!saved || importing) { events.trySend("正在保存，请稍后撤销"); return }
         val action = undoActions.remove(token) ?: return
         viewModelScope.launch {
             if (store.restoreBatchIfUnchanged(action)) {
-                action.firstOrNull { it.first.id == draft?.id }?.let { draft = it.first }
+                action.firstOrNull { it.first.id == draft?.id }?.let {
+                    draft = if (it.first.deleted) action.first().first else it.first
+                    editingId.set(draft?.id)
+                }
             } else events.send("记录已被修改或同步，无法撤销这次操作")
         }
     }

@@ -146,6 +146,13 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         val action = journalBatch(selected, merge, targetNotebook = notebookId)
         transactionWrite(action.map { it.second }); action
     } }
+    suspend fun split(id: String, selected: Set<String>): List<Pair<Entry, Entry>> = lock.withLock { withContext(Dispatchers.IO) {
+        val before = requireNotNull(get(id)) { "日记已变化，请重新打开" }
+        val (original, created) = journalSplit(before, selected)
+        transactionWrite(listOf(original, created))
+        // A tombstone is the undo baseline for the newly created synced record.
+        listOf(before to original, created.copy(deleted = true) to created)
+    } }
     private fun transactionWrite(records: List<Entry>) {
         writableDatabase.beginTransaction()
         try {

@@ -65,22 +65,83 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 for (uri in uris) {
-                    val name = withContext(Dispatchers.IO) {
-                        val mime = getApplication<Application>().contentResolver.getType(uri)
-                        val ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime ?: "")?.lowercase() ?: "mp4"
-                        val name = "${UUID.randomUUID()}.$ext"
-                        require(validVideo(name)) { "不支持的视频格式" }
-                        val file = java.io.File(store.mediaDir, name)
-                        try {
-                            getApplication<Application>().contentResolver.openInputStream(uri).use { input -> requireNotNull(input).use { file.outputStream().use { output -> it.copyTo(output) } } }
-                            require(file.length() > 0) { "视频为空" }
-                        } catch (e: Exception) { file.delete(); throw e }
-                        name
-                    }
+                    val name = importVideo(uri)
                     draft?.takeIf { it.id == original.id }?.let { change(it.copy(videos = it.videos + name, mediaOrder = it.attachments + name)) }
                 }
             } catch (e: Exception) { events.send(e.message ?: "视频添加失败") }
             finally { importing = false }
+        }
+    }
+    private suspend fun importVideo(uri: Uri): String = withContext(Dispatchers.IO) {
+        val mime = getApplication<Application>().contentResolver.getType(uri)
+        val ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime ?: "")?.lowercase() ?: "mp4"
+        val name = "${UUID.randomUUID()}.$ext"
+        require(validVideo(name)) { "不支持的视频格式" }
+        val file = java.io.File(store.mediaDir, name)
+        try {
+            getApplication<Application>().contentResolver.openInputStream(uri).use { input -> requireNotNull(input).use { file.outputStream().use { output -> it.copyTo(output) } } }
+            require(file.length() > 0) { "视频为空" }
+        } catch (e: Exception) { file.delete(); throw e }
+        name
+    }
+    private val shareLock = kotlinx.coroutines.sync.Mutex()
+    fun receiveShare(intent: android.content.Intent) {
+        if (intent.action != android.content.Intent.ACTION_SEND && intent.action != android.content.Intent.ACTION_SEND_MULTIPLE) return
+        val uris = runCatching { sharedMediaUris(intent) }.getOrDefault(emptyList())
+        if (uris.isEmpty()) { events.trySend("分享中没有可读取的图片或视频"); return }
+        viewModelScope.launch {
+            shareLock.withLock {
+                while (loading || busy || importing || pending > 0 || scanProgress.running || geoProgress.running || shopProgress.running) {
+                    kotlinx.coroutines.delay(100)
+                }
+                if (!saved) { events.send("当前日记保存失败，请先保存后重新分享"); return@withLock }
+                importing = true
+                var entry = Entry(notebookId = selectedNotebook ?: DEFAULT_NOTEBOOK)
+                var failures = 0
+                var firstTime: Long? = null
+                try {
+                    for ((index, uri) in uris.withIndex()) {
+                        importStatus = "正在接收分享媒体 ${index + 1}/${uris.size}"
+                        try {
+                            val mime = withContext(Dispatchers.IO) { getApplication<Application>().contentResolver.getType(uri) }
+                                ?: intent.type.orEmpty()
+                            val next = when {
+                                mime.startsWith("image/") -> {
+                                    val time = runCatching { store.photoTime(uri) }.getOrNull()
+                                    val name = store.importPhoto(uri)
+                                    if (firstTime == null) firstTime = time
+                                    val location = withContext(Dispatchers.IO) { store.knownPhotoLocation(name) }
+                                    entry.copy(photos = entry.photos + name, mediaOrder = entry.attachments + name,
+                                        photoLocations = location?.let { entry.photoLocations + (name to it) } ?: entry.photoLocations)
+                                }
+                                mime.startsWith("video/") -> {
+                                    val name = importVideo(uri)
+                                    entry.copy(videos = entry.videos + name, mediaOrder = entry.attachments + name)
+                                }
+                                else -> throw IllegalArgumentException("仅支持图片和视频")
+                            }
+                            store.save(next)
+                            entry = next
+                        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (_: Exception) { failures++ }
+                    }
+                    if (entry.attachments.isNotEmpty()) {
+                        closeLocationPicker()
+                        photoTimePrompt = null
+                        editingId.set(entry.id)
+                        draft = entry
+                        saved = true
+                        firstTime?.let { timestamp ->
+                            when (photoTimePreference) {
+                                PhotoTimePreference.ASK -> photoTimePrompt = PhotoTimePrompt(entry.id, timestamp)
+                                PhotoTimePreference.USE -> change(entry.withJournalTime(timestamp))
+                                PhotoTimePreference.KEEP -> Unit
+                            }
+                        }
+                        events.send(if (failures == 0) "已从分享创建日记" else "已创建日记，$failures 个媒体未能添加，请重新分享失败的媒体")
+                    } else events.send("分享导入失败：无法读取图片或视频，请从相册重新分享")
+                } finally { importing = false; importStatus = "" }
+            }
         }
     }
     private val settings = CloudSettings(app)

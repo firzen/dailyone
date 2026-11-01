@@ -12,6 +12,7 @@ import androidx.compose.ui.platform.LocalContext
 import android.app.Activity
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.platform.LocalView
+import androidx.activity.viewModels
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -65,10 +66,17 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+    private val journal: JournalViewModel by viewModels()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { DailyOneTheme { DailyOneApp() } }
+        setContent { DailyOneTheme { DailyOneApp(journal) } }
+        if (savedInstanceState == null) journal.receiveShare(intent)
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        journal.receiveShare(intent)
     }
 }
 private val Blue = Color(0xFF168CCC)
@@ -98,6 +106,9 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var mergeNotebook by remember { mutableStateOf<String?>(null) }
     var batchDialog by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(draft?.id) {
+        if (draft != null) { settingsOpen = false; selectedIds = emptySet() }
+    }
     BackHandler(enabled = selectedIds.isNotEmpty()) { selectedIds = emptySet() }
     val toggleSelection: (Entry) -> Unit = { entry -> selectedIds = if (entry.id in selectedIds) selectedIds - entry.id else selectedIds + entry.id }
     fun keep(entry: Entry) {
@@ -495,7 +506,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                 IconButton(onClick = { videoPicker.launch("video/*") }, enabled = !importing) { Icon(Icons.Outlined.VideoLibrary, "添加视频") }
                 Text("${entry.photos.size} 张 · ${entry.videos.size} 个视频", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                 Spacer(Modifier.weight(1f))
-                Text(if (importing) "正在添加图片…" else if (saved) "已保存到本机" else "正在保存…", Modifier.padding(end = 12.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (importing) "正在添加媒体…" else if (saved) "已保存到本机" else "正在保存…", Modifier.padding(end = 12.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } else Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
             Text((if (entry.scanDay == "unknown") "日期待确认" else date(entry.createdAt, "HH:mm")) + " · ", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)

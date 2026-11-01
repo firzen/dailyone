@@ -88,7 +88,7 @@ class ScanIntegrationTest {
         store.load()
         val inputs = (1..3).map { index ->
             val file = File(context.cacheDir, "scan-fixture-${UUID.randomUUID()}.jpg"); fixtureFiles += file
-            val bitmap = Bitmap.createBitmap(80, 80, Bitmap.Config.ARGB_8888)
+            val bitmap = Bitmap.createBitmap(80, 80, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.rgb(index * 60, 20, 40)) }
             file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }; bitmap.recycle()
             ScanPhoto(Uri.fromFile(file), "fixture-$index", 1704103200000L + index * 1000)
         }

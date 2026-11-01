@@ -127,7 +127,7 @@ class SyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWork
                 val complete = store.lock.withLock {
                     currentCoroutineContext().ensureActive()
                     if (SyncRuntime.token(applicationContext) != token || SyncRuntime.isPaused(applicationContext)) throw CancellationException("同步已暂停或停止")
-                    val pending = store.entries.value.any { it.dirty && it.syncable } || store.notebooks.value.any { it.dirty }
+                    val pending = store.entries.value.any { it.dirty && it.syncable } || store.notebooks.value.any { it.dirty } || store.scanHistoryPending.value
                     if (pending) false else {
                         SyncRuntime.complete(applicationContext, token)
                         val message = if (conflicts == 0) {

@@ -16,12 +16,23 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+import java.security.MessageDigest
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 
-class JournalStore(context: Context, databaseName: String = "journal.db", photoDirectoryName: String = "photos") : SQLiteOpenHelper(context, databaseName, null, 5) {
+class JournalStore(context: Context, databaseName: String = "journal.db", photoDirectoryName: String = "photos") : SQLiteOpenHelper(context, databaseName, null, 7) {
     private val appContext = context.applicationContext
     val mediaDir = File(context.filesDir, photoDirectoryName).apply { mkdirs() }
     val notebooks = MutableStateFlow<List<Notebook>>(emptyList())
     val entries = MutableStateFlow<List<Entry>>(emptyList())
+    val scanHistoryPending = MutableStateFlow(false)
+    private var photoGeneration = 0L
+    private var referencedPhotos = emptySet<String>()
+    private fun updateEntries(records: List<Entry>) {
+        val names = records.flatMap { it.photos }.toSet()
+        if (names != referencedPhotos) { referencedPhotos = names; photoGeneration++ }
+        entries.value = records
+    }
     val lock = Mutex()
     val syncLock = Mutex()
     val editingId = java.util.concurrent.atomic.AtomicReference<String?>(null)
@@ -29,6 +40,8 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         db.execSQL("CREATE TABLE entries (id TEXT PRIMARY KEY, document TEXT NOT NULL, dirty INTEGER NOT NULL, etag TEXT, candidate INTEGER NOT NULL DEFAULT 0, scan_day TEXT)")
         createScanTable(db)
         createPhotoSources(db)
+        createScanHistory(db)
+        createScanBatches(db)
         createNotebooks(db)
         db.execSQL("CREATE TABLE sync_state (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
     }
@@ -76,6 +89,16 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
     private fun createScanTable(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS scanned_media (source_key TEXT PRIMARY KEY, entry_id TEXT, photo_name TEXT)")
     }
+    private fun createScanHistory(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS scan_history (sha256 TEXT PRIMARY KEY, dirty INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS scan_source_hashes (source_key TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS photo_fingerprints (photo_name TEXT PRIMARY KEY, size INTEGER NOT NULL, modified INTEGER NOT NULL, sha256 TEXT NOT NULL)")
+    }
+    private fun createScanBatches(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS scan_batches (id TEXT PRIMARY KEY, document TEXT NOT NULL, dirty INTEGER NOT NULL)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS scan_history_pending ON scan_history(dirty)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS scan_batches_pending ON scan_batches(dirty)")
+    }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
             db.execSQL("ALTER TABLE entries ADD COLUMN candidate INTEGER NOT NULL DEFAULT 0")
@@ -85,12 +108,53 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         if (oldVersion < 3) createPhotoSources(db)
         if (oldVersion < 4) createNotebooks(db)
         if (oldVersion < 5) db.execSQL("CREATE TABLE IF NOT EXISTS sync_state (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        if (oldVersion < 6) createScanHistory(db)
+        if (oldVersion < 7) createScanBatches(db)
     }
     suspend fun load() = lock.withLock { withContext(Dispatchers.IO) { refreshNotebooks(); refresh() } }
     private fun read(): List<Entry> = readableDatabase.rawQuery("SELECT document, dirty, etag, candidate, scan_day FROM entries", null).use { c ->
         buildList { while (c.moveToNext()) add(Entry.parse(c.getString(0), c.getString(2), c.getInt(3) == 1, c.getString(4)).copy(dirty = c.getInt(1) == 1)) }
     }
-    private fun refresh() { entries.value = read().sortedByDescending { it.createdAt } }
+    private fun refresh() { updateEntries(read().sortedByDescending { it.createdAt }); refreshScanPending() }
+    private fun refreshScanPending() {
+        scanHistoryPending.value = readableDatabase.rawQuery("SELECT 1 FROM scan_history WHERE dirty=1 UNION ALL SELECT 1 FROM scan_batches WHERE dirty=1 LIMIT 1", null).use { it.moveToFirst() }
+    }
+    private fun rememberHash(hash: String, dirty: Boolean): Boolean {
+        require(validScanHash(hash))
+        val inserted = writableDatabase.insertWithOnConflict("scan_history", null, ContentValues().apply {
+            put("sha256", hash); put("dirty", if (dirty) 1 else 0)
+        }, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+        return inserted
+    }
+    internal suspend fun scanHistoryHashes(pendingOnly: Boolean = false): Set<String> = lock.withLock { withContext(Dispatchers.IO) {
+        readableDatabase.rawQuery("SELECT sha256 FROM scan_history" + if (pendingOnly) " WHERE dirty=1" else "", null).use { c ->
+            buildSet { while (c.moveToNext()) add(c.getString(0)) }
+        }
+    } }
+    internal suspend fun acceptScanHash(hash: String) = lock.withLock { withContext(Dispatchers.IO) {
+        if (rememberHash(hash, false)) photoGeneration++
+        writableDatabase.execSQL("UPDATE scan_history SET dirty=0 WHERE sha256=?", arrayOf(hash))
+        refreshScanPending()
+    } }
+    internal suspend fun markScanHashUploaded(hash: String) = acceptScanHash(hash)
+    internal suspend fun backfillScanSource(key: String, uri: Uri) {
+        val missing = lock.withLock { withContext(Dispatchers.IO) {
+            !readableDatabase.rawQuery("SELECT 1 FROM scan_source_hashes WHERE source_key=?", arrayOf(key)).use { it.moveToFirst() }
+        } }
+        if (!missing) return
+        val hash = originalPhotoDigest(uri)
+        lock.withLock { withContext(Dispatchers.IO) {
+            writableDatabase.beginTransaction()
+            var inserted = false
+            try {
+                inserted = rememberHash(hash, true)
+                writableDatabase.execSQL("INSERT OR IGNORE INTO scan_source_hashes(source_key,sha256) VALUES(?,?)", arrayOf(key, hash))
+                writableDatabase.setTransactionSuccessful()
+            } finally { writableDatabase.endTransaction() }
+            if (inserted) photoGeneration++
+            refreshScanPending()
+        } }
+    }
     fun get(id: String): Entry? = readableDatabase.rawQuery(
         "SELECT document, dirty, etag, candidate, scan_day FROM entries WHERE id = ?", arrayOf(id)
     ).use { c -> if (c.moveToFirst()) Entry.parse(c.getString(0), c.getString(2), c.getInt(3) == 1, c.getString(4)).copy(dirty = c.getInt(1) == 1) else null }
@@ -103,32 +167,184 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         check(writableDatabase.insertWithOnConflict("entries", null, v, SQLiteDatabase.CONFLICT_REPLACE) != -1L) { "日记保存失败" }
     }
     private fun publish(entry: Entry) {
-        entries.value = (entries.value.filterNot { it.id == entry.id } + entry).sortedByDescending { it.createdAt }
+        updateEntries((entries.value.filterNot { it.id == entry.id } + entry).sortedByDescending { it.createdAt })
     }
     fun write(entry: Entry) { persist(entry); publish(entry) }
     suspend fun scanned(key: String): Boolean = lock.withLock { withContext(Dispatchers.IO) {
         readableDatabase.rawQuery("SELECT 1 FROM scanned_media WHERE source_key=?", arrayOf(key)).use { it.moveToFirst() }
     } }
-    suspend fun recordScan(key: String, timestamp: Long?, photo: String?, editingId: () -> String?) = lock.withLock {
-        withContext(Dispatchers.IO) {
-            if (readableDatabase.rawQuery("SELECT 1 FROM scanned_media WHERE source_key=?", arrayOf(key)).use { it.moveToFirst() }) return@withContext
-            val day = timestamp?.let(::scanDay) ?: "unknown"
-            val candidate = if (photo == null) null else {
-                val current = entries.value.firstOrNull { it.candidate && !it.deleted && it.scanDay == day && it.id != editingId() }
-                    ?: Entry(createdAt = timestamp ?: 0L, candidate = true, scanDay = day, dirty = false)
-                current.copy(photos = current.photos + photo, updatedAt = System.currentTimeMillis(),
-                    photoLocations = knownPhotoLocation(photo)?.let { current.photoLocations + (photo to it) } ?: current.photoLocations)
+    private fun recordScanLocked(key: String, timestamp: Long?, photo: String?, hash: String? = null, editingId: () -> String?): Boolean {
+        if (readableDatabase.rawQuery("SELECT 1 FROM scanned_media WHERE source_key=?", arrayOf(key)).use { it.moveToFirst() }) return false
+        val day = timestamp?.let(::scanDay) ?: "unknown"
+        val candidate = if (photo == null) null else {
+            val current = entries.value.firstOrNull { it.candidate && !it.deleted && it.scanDay == day && it.id != editingId() }
+                ?: Entry(createdAt = timestamp ?: 0L, candidate = true, scanDay = day, dirty = false)
+            current.copy(photos = current.photos + photo, updatedAt = System.currentTimeMillis(),
+                photoLocations = knownPhotoLocation(photo)?.let { current.photoLocations + (photo to it) } ?: current.photoLocations)
+        }
+        var insertedHash = false
+        writableDatabase.beginTransaction()
+        try {
+            if (candidate != null) persist(candidate)
+            val row = ContentValues().apply { put("source_key", key); put("entry_id", candidate?.id); put("photo_name", photo) }
+            writableDatabase.insertOrThrow("scanned_media", null, row)
+            if (hash != null) {
+                insertedHash = rememberHash(hash, true)
+                writableDatabase.execSQL("INSERT OR REPLACE INTO scan_source_hashes(source_key,sha256) VALUES(?,?)", arrayOf(key, hash))
             }
-            writableDatabase.beginTransaction()
-            try {
-                if (candidate != null) persist(candidate)
-                val row = ContentValues().apply { put("source_key", key); put("entry_id", candidate?.id); put("photo_name", photo) }
-                writableDatabase.insertOrThrow("scanned_media", null, row)
-                writableDatabase.setTransactionSuccessful()
-            } finally { writableDatabase.endTransaction() }
-            if (candidate != null) publish(candidate)
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+        if (insertedHash) photoGeneration++
+        refreshScanPending()
+        if (candidate != null) publish(candidate)
+        return true
+    }
+    suspend fun recordScan(key: String, timestamp: Long?, photo: String?, editingId: () -> String?) = lock.withLock {
+        withContext(Dispatchers.IO) { recordScanLocked(key, timestamp, photo, editingId = editingId); Unit }
+    }
+    private fun cacheFingerprint(photo: PhotoFingerprint) {
+        val row = ContentValues().apply {
+            put("photo_name", photo.name); put("size", photo.size); put("modified", photo.modified); put("sha256", photo.hash)
+        }
+        check(writableDatabase.insertWithOnConflict("photo_fingerprints", null, row, SQLiteDatabase.CONFLICT_REPLACE) != -1L) { "图片指纹保存失败" }
+    }
+    private fun fingerprint(file: File, cached: PhotoFingerprint?): PhotoFingerprint {
+        if (cached != null && cached.matches(file)) return cached
+        val size = file.length(); val modified = file.lastModified()
+        val hash = fileSha256(file)
+        check(file.isFile && size == file.length() && modified == file.lastModified()) { "图片正在变化，请稍后重新扫描" }
+        return PhotoFingerprint(file.name, size, modified, hash)
+    }
+    internal suspend fun photoScanIndex(stopped: () -> Boolean = { false },
+        progress: (Int, Int) -> Unit = { _, _ -> }): PhotoScanIndex? = withContext(Dispatchers.IO) {
+        val snapshot = lock.withLock {
+            val cached = readableDatabase.rawQuery("SELECT photo_name,size,modified,sha256 FROM photo_fingerprints", null).use { cursor ->
+                buildMap { while (cursor.moveToNext()) {
+                    val photo = PhotoFingerprint(cursor.getString(0), cursor.getLong(1), cursor.getLong(2), cursor.getString(3))
+                    put(photo.name, photo)
+                } }
+            }
+            val previous = readableDatabase.rawQuery("SELECT photo_name FROM scanned_media WHERE photo_name IS NOT NULL", null).use { c ->
+                buildSet { while (c.moveToNext()) add(c.getString(0)) }
+            }
+            Triple(photoGeneration, referencedPhotos + previous, cached)
+        }
+        val handled = scanHistoryHashes().toMutableSet()
+        var expectedGeneration = snapshot.first
+        var stale = false
+        var done = 0
+        progress(done, snapshot.second.size)
+        for (name in snapshot.second) {
+            coroutineContext.ensureActive()
+            if (stopped()) return@withContext null
+            val file = File(mediaDir, name)
+            if (file.isFile && file.length() > 0) {
+                val photo = fingerprint(file, snapshot.third[name])
+                if (photo != snapshot.third[name] || photo.hash !in handled) lock.withLock {
+                    if (photoGeneration != expectedGeneration) stale = true
+                    var added = false
+                    writableDatabase.beginTransaction()
+                    try {
+                        cacheFingerprint(photo)
+                        added = rememberHash(photo.hash, true)
+                        writableDatabase.setTransactionSuccessful()
+                    } finally { writableDatabase.endTransaction() }
+                    if (added) photoGeneration++
+                    expectedGeneration = photoGeneration
+                    handled.add(photo.hash)
+                    refreshScanPending()
+                }
+            }
+            // Every completed file is durable before a stop, cancellation or next file read.
+            progress(++done, snapshot.second.size)
+        }
+        lock.withLock {
+            if (photoGeneration != expectedGeneration) stale = true
+            PhotoScanIndex(if (stale) snapshot.first else photoGeneration, emptyList(), handled)
         }
     }
+    internal suspend fun knownScanBatches(): Set<String> = lock.withLock { withContext(Dispatchers.IO) {
+        readableDatabase.rawQuery("SELECT id FROM scan_batches WHERE dirty=0", null).use { c ->
+            buildSet { while (c.moveToNext()) add(c.getString(0)) }
+        }
+    } }
+    internal suspend fun pendingScanBatches(): List<ScanHistoryBatch> = lock.withLock { withContext(Dispatchers.IO) {
+        fun pending() = readableDatabase.rawQuery("SELECT id,document FROM scan_batches WHERE dirty=1 ORDER BY id", null).use { c ->
+            buildList { while (c.moveToNext()) add(parseScanBatch(c.getString(0), c.getString(1))) }
+        }
+        val existing = pending()
+        val assigned = existing.flatMap { it.hashes }.toSet()
+        val fresh = readableDatabase.rawQuery("SELECT sha256 FROM scan_history WHERE dirty=1 ORDER BY sha256", null).use { c ->
+            buildList { while (c.moveToNext()) if (c.getString(0) !in assigned) add(c.getString(0)) }
+        }
+        val batches = fresh.chunked(SCAN_BATCH_SIZE).map(::newScanBatch)
+        writableDatabase.beginTransaction()
+        try {
+            batches.forEach { batch ->
+                writableDatabase.insertOrThrow("scan_batches", null, ContentValues().apply {
+                    put("id", batch.id); put("document", batch.document); put("dirty", 1)
+                })
+            }
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+        refreshScanPending()
+        existing + batches
+    } }
+    internal suspend fun acceptScanBatch(id: String, document: String) {
+        val batch = parseScanBatch(id, document)
+        lock.withLock { withContext(Dispatchers.IO) {
+            var added = false
+            writableDatabase.beginTransaction()
+            try {
+                for (hash in batch.hashes) {
+                    if (rememberHash(hash, false)) added = true
+                    writableDatabase.execSQL("UPDATE scan_history SET dirty=0 WHERE sha256=?", arrayOf(hash))
+                }
+                writableDatabase.insertWithOnConflict("scan_batches", null, ContentValues().apply {
+                    put("id", id); put("document", document); put("dirty", 0)
+                }, SQLiteDatabase.CONFLICT_REPLACE).also { check(it != -1L) { "去重批次保存失败" } }
+                writableDatabase.setTransactionSuccessful()
+            } finally { writableDatabase.endTransaction() }
+            if (added) photoGeneration++
+            refreshScanPending()
+        } }
+    }
+    internal suspend fun importedPhotoFingerprint(name: String): PhotoFingerprint = withContext(Dispatchers.IO) {
+        val photo = fingerprint(File(mediaDir, name), null)
+        lock.withLock { cacheFingerprint(photo) }
+        photo
+    }
+    suspend fun originalPhotoDigest(uri: Uri): String = withContext(Dispatchers.IO) {
+        appContext.contentResolver.openInputStream(originalPhotoUri(appContext, uri)).use { input ->
+            requireNotNull(input) { "无法读取原图" }
+            val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(64 * 1024)
+            while (true) {
+                coroutineContext.ensureActive()
+                val count = input.read(buffer); if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+            digest.digest().joinToString("") { "%02x".format(it) }
+        }
+    }
+    internal suspend fun recordScanContent(key: String, hash: String, index: PhotoScanIndex,
+        timestamp: Long? = null, photo: String? = null, complete: Boolean = false, editingId: () -> String?): ScanContentResult = lock.withLock { withContext(Dispatchers.IO) {
+        fun result(action: ScanContentAction) = ScanContentResult(action, photoGeneration)
+        if (readableDatabase.rawQuery("SELECT 1 FROM scanned_media WHERE source_key=?", arrayOf(key)).use { it.moveToFirst() }) return@withContext result(ScanContentAction.SKIPPED)
+        if (index.generation != photoGeneration) return@withContext result(ScanContentAction.STALE)
+        if (index.contains(hash)) {
+            val row = ContentValues().apply { put("source_key", key) }
+            writableDatabase.beginTransaction()
+            try {
+                writableDatabase.insertOrThrow("scanned_media", null, row)
+                writableDatabase.execSQL("INSERT OR REPLACE INTO scan_source_hashes(source_key,sha256) VALUES(?,?)", arrayOf(key, hash))
+                writableDatabase.setTransactionSuccessful()
+            } finally { writableDatabase.endTransaction() }
+            return@withContext result(ScanContentAction.SKIPPED)
+        }
+        if (!complete) return@withContext result(ScanContentAction.UNKNOWN)
+        recordScanLocked(key, timestamp, photo, hash, editingId)
+        result(if (photo == null) ScanContentAction.RECORDED else ScanContentAction.ADDED)
+    } }
     suspend fun review(id: String, keep: Boolean, selected: List<String>? = null): Pair<Entry, Entry>? = lock.withLock {
         withContext(Dispatchers.IO) {
             val before = get(id)?.takeIf { it.candidate && !it.deleted } ?: return@withContext null
@@ -162,7 +378,7 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
             writableDatabase.setTransactionSuccessful()
         } finally { writableDatabase.endTransaction() }
         val replaced = records.associateBy { it.id }
-        entries.value = (entries.value.filterNot { it.id in replaced } + records).sortedByDescending { it.createdAt }
+        updateEntries((entries.value.filterNot { it.id in replaced } + records).sortedByDescending { it.createdAt })
     }
     suspend fun save(entry: Entry) = lock.withLock { withContext(Dispatchers.IO) {
         val resolved = resolvePhotos(entry)
@@ -187,6 +403,8 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         try {
             writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL WHERE candidate = 0")
             writableDatabase.execSQL("UPDATE notebooks SET dirty = 1, etag = NULL")
+            writableDatabase.execSQL("UPDATE scan_history SET dirty = 1")
+            writableDatabase.execSQL("UPDATE scan_batches SET dirty = 1")
             writableDatabase.execSQL("INSERT OR REPLACE INTO sync_state(name,value) VALUES('target',?)", arrayOf(target))
             writableDatabase.setTransactionSuccessful()
         } finally { writableDatabase.endTransaction() }
@@ -194,7 +412,9 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
     }
     suspend fun resetSyncBaseline() = lock.withLock { withContext(Dispatchers.IO) {
         writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL")
-        writableDatabase.execSQL("UPDATE notebooks SET dirty = 1, etag = NULL"); refreshNotebooks()
+        writableDatabase.execSQL("UPDATE notebooks SET dirty = 1, etag = NULL")
+            writableDatabase.execSQL("UPDATE scan_history SET dirty = 1")
+            writableDatabase.execSQL("UPDATE scan_batches SET dirty = 1"); refreshNotebooks()
         refresh()
     } }
     suspend fun photoTime(uri: Uri): Long? = withContext(Dispatchers.IO) {

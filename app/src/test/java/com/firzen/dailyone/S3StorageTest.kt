@@ -88,6 +88,33 @@ class S3StorageTest {
         return S3Storage(config, client)
     }
     @After fun tearDown() { if (::storage.isInitialized) storage.close(); if (::server.isInitialized) server.shutdown() }
+    @Test fun scanBatchUsesTwoRequestsFor512HashesAndIsSafeOnQiniuWithoutConditions() {
+        val batch = newScanBatch((1..512).map { "%064x".format(it) })
+        val before = server.requestCount
+        storage.putScanBatch(batch.id, batch.document)
+        assertEquals(2, server.requestCount - before)
+        assertEquals(setOf(batch.id), storage.listScanBatches())
+        assertEquals(batch.document, storage.getScanBatch(batch.id))
+        storage.close(); storage = newStorage(qiniu = true); ignoreConditions = true
+        storage.putScanBatch(batch.id, batch.document); storage.putScanBatch(batch.id, batch.document)
+        assertEquals(setOf(batch.id), storage.listScanBatches())
+        assertEquals(setOf("DailyOne/scan-history-batches/${batch.id}.json"), objects.keys)
+        objects["DailyOne/scan-history-batches/${batch.id}.json"] = newScanBatch(listOf("f".repeat(64))).document.toByteArray() to "tag"
+        assertThrows(IllegalArgumentException::class.java) { storage.getScanBatch(batch.id) }
+    }
+    @Test fun immutableScanHistoryRoundTripsWithAndWithoutConditionalWriteSupport() {
+        val hash = "a".repeat(64)
+        storage.putScanHash(hash); storage.putScanHash(hash)
+        assertEquals(setOf(hash), storage.listScanHashes())
+        storage.getScanHash(hash)
+        storage.close(); storage = newStorage(qiniu = true); ignoreConditions = true
+        storage.putScanHash(hash); storage.putScanHash(hash)
+        assertEquals(setOf(hash), storage.listScanHashes())
+        assertEquals(setOf("DailyOne/scan-history/$hash.json"), objects.keys)
+        assertEquals(scanHistoryJson(hash), objects.values.single().first.toString(Charsets.UTF_8))
+        objects["DailyOne/scan-history/$hash.json"] = scanHistoryJson("b".repeat(64)).toByteArray() to "tag"
+        assertThrows(IllegalArgumentException::class.java) { storage.getScanHash(hash) }
+    }
     @Test fun verifiesConditionalWritesAndOnlyDeletesItsOwnProbe() {
         val entry = Entry(body = "保留内容")
         objects["DailyOne/entries/${entry.id}.json"] = entry.json().toByteArray() to "\"existing\""

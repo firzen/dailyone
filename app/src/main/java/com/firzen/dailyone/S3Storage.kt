@@ -39,6 +39,8 @@ class S3Storage(input: S3Config, suppliedClient: S3Client? = null) : CloudStorag
             path.startsWith(".versions/entries/") -> "日记版本"
             path.startsWith("notebooks/") -> "日记本"
             path.startsWith("entries/") -> "日记"
+            path.startsWith("scan-history-batches/") -> "扫描去重批次"
+            path.startsWith("scan-history/") -> "扫描去重记录"
             path.startsWith("photos/") -> "媒体"
             else -> "S3 对象"
         }
@@ -225,6 +227,52 @@ class S3Storage(input: S3Config, suppliedClient: S3Client? = null) : CloudStorag
     override fun listEntries() = list("entries")
     override fun listNotebooks() = list("notebooks")
     override fun listPhotos() = list("photos").keys
+    override fun listScanHashes(): Set<String> = request {
+        listObjects("scan-history/").keys.mapNotNull { path ->
+            path.removePrefix("scan-history/").takeIf { it.endsWith(".json") }
+                ?.removeSuffix(".json")?.takeIf(::validScanHash)
+        }.toSet()
+    }
+    override fun getScanHash(hash: String) = request {
+        require(validScanHash(hash))
+        validateScanHistory(readDocument("scan-history/$hash.json", 4096).first.toString(Charsets.UTF_8), hash)
+    }
+    override fun putScanHash(hash: String) = request {
+        val bytes = scanHistoryJson(hash).toByteArray(Charsets.UTF_8)
+        val path = "scan-history/$hash.json"
+        try {
+            stage("上传", path)
+            client.putObject {
+                bucket = config.bucket; key = key(path); body = ByteStream.fromBytes(bytes)
+                ifNoneMatch = "*"; contentType = "application/json; charset=utf-8"
+            }
+        } catch (e: S3Exception) { if (e.sdkErrorMetadata.errorCode != "PreconditionFailed") throw e }
+        validateScanHistory(readDocument(path, 4096).first.toString(Charsets.UTF_8), hash)
+    }
+    override fun listScanBatches(): Set<String> = request {
+        listObjects("scan-history-batches/").keys.mapNotNull { path ->
+            path.removePrefix("scan-history-batches/").takeIf { it.endsWith(".json") }
+                ?.removeSuffix(".json")?.takeIf(::validScanHash)
+        }.toSet()
+    }
+    override fun getScanBatch(id: String): String = request {
+        require(validScanHash(id))
+        readDocument("scan-history-batches/$id.json", SCAN_BATCH_LIMIT).first.toString(Charsets.UTF_8)
+            .also { parseScanBatch(id, it) }
+    }
+    override fun putScanBatch(id: String, document: String) = request {
+        parseScanBatch(id, document)
+        val path = "scan-history-batches/$id.json"
+        try {
+            stage("上传", path)
+            client.putObject {
+                bucket = config.bucket; key = key(path); body = ByteStream.fromBytes(document.toByteArray(Charsets.UTF_8))
+                ifNoneMatch = "*"; contentType = "application/json; charset=utf-8"
+            }
+        } catch (e: S3Exception) { if (e.sdkErrorMetadata.errorCode != "PreconditionFailed") throw e }
+        parseScanBatch(id, readDocument(path, SCAN_BATCH_LIMIT).first.toString(Charsets.UTF_8))
+        Unit
+    }
     override fun getEntry(id: String): Entry = request {
         require(validId(id))
         if (revisionMode) {

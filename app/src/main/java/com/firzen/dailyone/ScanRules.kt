@@ -19,7 +19,7 @@ fun reviewCandidate(entry: Entry, keep: Boolean, selected: List<String>? = null)
 }
 
 data class ScanProgress(val running: Boolean = false, val stopping: Boolean = false,
-    val total: Int = 0, val processed: Int = 0, val matched: Int = 0, val skipped: Int = 0, val failed: Int = 0)
+    val total: Int = 0, val processed: Int = 0, val matched: Int = 0, val skipped: Int = 0, val failed: Int = 0, val stage: String = "")
 
 fun Entry.withJournalTime(timestamp: Long): Entry = copy(createdAt = timestamp,
     scanDay = if (candidate) com.firzen.dailyone.scanDay(timestamp) else scanDay)

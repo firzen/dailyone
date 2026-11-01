@@ -10,6 +10,12 @@ interface CloudStorage : AutoCloseable {
     fun listEntries(): Map<String, String>
     fun listNotebooks(): Map<String, String>
     fun listPhotos(): Set<String>
+    fun listScanHashes(): Set<String>
+    fun getScanHash(hash: String)
+    fun putScanHash(hash: String)
+    fun listScanBatches(): Set<String>
+    fun getScanBatch(id: String): String
+    fun putScanBatch(id: String, document: String)
     fun getEntry(id: String): Entry
     fun getNotebook(id: String): Notebook
     fun putEntry(entry: Entry): String?

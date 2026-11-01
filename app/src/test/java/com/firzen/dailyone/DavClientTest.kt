@@ -28,19 +28,58 @@ class DavClientTest {
         dav = DavClient(CloudConfig(server.url("/dav/").toString(), "user", "password"), client)
     }
     @After fun tearDown() { server.shutdown() }
+    @Test fun immutableBatchVerifiesExistingContentAndListsWithoutEtags() {
+        val batch = newScanBatch((1..512).map { "%064x".format(it) })
+        server.enqueue(MockResponse().setResponseCode(412))
+        server.enqueue(MockResponse().setBody(batch.document))
+        dav.putScanBatch(batch.id, batch.document)
+        val put = server.takeRequest()
+        assertEquals("/dav/DailyOne/scan-history-batches/${batch.id}.json", put.path)
+        assertEquals(batch.document, put.body.readUtf8()); assertEquals("*", put.getHeader("If-None-Match"))
+        assertEquals("GET", server.takeRequest().method)
+        server.enqueue(MockResponse().setBody(newScanBatch(listOf("f".repeat(64))).document))
+        assertThrows(IllegalArgumentException::class.java) { dav.getScanBatch(batch.id) }
+        server.takeRequest()
+        server.enqueue(MockResponse().setResponseCode(207).setBody("""
+            <d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/DailyOne/scan-history-batches/${batch.id}.json</d:href></d:response></d:multistatus>
+        """.trimIndent()))
+        assertEquals(setOf(batch.id), dav.listScanBatches())
+    }
+    @Test fun scanHistoryVerifiesExistingMarkersAndRejectsMismatchedContent() {
+        val hash = "a".repeat(64)
+        server.enqueue(MockResponse().setResponseCode(412))
+        server.enqueue(MockResponse().setBody(scanHistoryJson(hash)))
+        dav.putScanHash(hash)
+        val put = server.takeRequest()
+        assertEquals("/dav/DailyOne/scan-history/$hash.json", put.path)
+        assertEquals("*", put.getHeader("If-None-Match")); assertEquals(scanHistoryJson(hash), put.body.readUtf8())
+        assertEquals("GET", server.takeRequest().method)
+        server.enqueue(MockResponse().setBody(scanHistoryJson("b".repeat(64))))
+        assertThrows(IllegalArgumentException::class.java) { dav.getScanHash(hash) }
+        server.takeRequest()
+        server.enqueue(MockResponse().setResponseCode(207).setBody("""
+            <d:multistatus xmlns:d="DAV:">
+            <d:response><d:href>/dav/DailyOne/scan-history/$hash.json</d:href></d:response>
+            <d:response><d:href>/dav/DailyOne/scan-history/invalid.json</d:href></d:response>
+            </d:multistatus>
+        """.trimIndent()))
+        assertEquals(setOf(hash), dav.listScanHashes())
+    }
     @Test fun collectionsAreCreatedUnderChosenDirectory() {
-        repeat(4) { server.enqueue(MockResponse().setResponseCode(201)) }
+        repeat(6) { server.enqueue(MockResponse().setResponseCode(201)) }
         dav.ensureCollections()
         assertEquals("/dav/DailyOne/", server.takeRequest().path)
         assertEquals("/dav/DailyOne/entries/", server.takeRequest().path)
         assertEquals("/dav/DailyOne/photos/", server.takeRequest().path)
         assertEquals("/dav/DailyOne/notebooks/", server.takeRequest().path)
+        assertEquals("/dav/DailyOne/scan-history/", server.takeRequest().path)
+        assertEquals("/dav/DailyOne/scan-history-batches/", server.takeRequest().path)
     }
     @Test fun pastedUsernameWhitespaceIsRemovedWithoutChangingPassword() {
         val pasted = DavClient(CloudConfig(server.url("/dav/").toString(), " user\n", " password "), client)
-        repeat(4) { server.enqueue(MockResponse().setResponseCode(201)) }
+        repeat(6) { server.enqueue(MockResponse().setResponseCode(201)) }
         pasted.ensureCollections()
-        repeat(4) {
+        repeat(6) {
             assertEquals(okhttp3.Credentials.basic("user", " password "), server.takeRequest().getHeader("Authorization"))
         }
     }

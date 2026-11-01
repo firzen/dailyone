@@ -52,29 +52,74 @@ class PhotoScanner(private val context: Context, private val store: JournalStore
         } ?: error("无法读取相册，请重新授予照片权限")
         var state = ScanProgress(running = true, total = photos.size)
         progress(state)
-        if (!stop.get() && photos.isNotEmpty()) detectorFactory().use { detector ->
-            for (photo in photos) {
-                coroutineContext.ensureActive()
-                if (stop.get()) break
-                if (store.scanned(photo.key)) {
-                    state = state.copy(processed = state.processed + 1, skipped = state.skipped + 1); progress(state); continue
+        if (!stop.get() && photos.isNotEmpty()) {
+            suspend fun prepareIndex(): PhotoScanIndex? {
+                val index = store.photoScanIndex(stopped = { stop.get() }) { done, total ->
+                    progress(state.copy(stage = "核对已处理图片 $done/$total"))
                 }
-                var imported: String? = null
-                try {
-                    val bitmap = detectionBitmap(photo.uri)
-                    val person = try { detector.containsPerson(bitmap) } finally { bitmap.recycle() }
-                    if (stop.get()) break
-                    val time = if (person) store.photoTime(photo.uri) ?: photo.taken else null
-                    if (person) imported = store.importPhoto(photo.uri)
-                    store.recordScan(photo.key, time, imported, editingId)
-                    imported = null // The checkpoint and candidate now own this file.
-                    state = state.copy(processed = state.processed + 1, matched = state.matched + if (person) 1 else 0)
-                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                catch (_: SecurityException) { throw SecurityException("相册权限已变更，已有候选已保留，请重新授权后继续") }
-                catch (_: Exception) { state = state.copy(processed = state.processed + 1, failed = state.failed + 1) }
-                finally { imported?.let { java.io.File(store.mediaDir, it).delete() } }
                 progress(state)
+                return index
             }
+            var index = prepareIndex()
+            var detector: PersonClassifier? = null
+            suspend fun record(key: String, hash: String, time: Long? = null, imported: String? = null, complete: Boolean = false): ScanContentResult? {
+                while (!stop.get()) {
+                    val current = index ?: return null
+                    val result = store.recordScanContent(key, hash, current, time, imported, complete, editingId)
+                    if (result.action != ScanContentAction.STALE) return result
+                    index = prepareIndex()
+                }
+                return null
+            }
+            try {
+                for (photo in photos) {
+                    coroutineContext.ensureActive()
+                    if (stop.get() || index == null) break
+                    var imported: String? = null
+                    try {
+                        if (store.scanned(photo.key)) {
+                            store.backfillScanSource(photo.key, photo.uri)
+                            state = state.copy(processed = state.processed + 1, skipped = state.skipped + 1); progress(state); continue
+                        }
+                        val hash = store.originalPhotoDigest(photo.uri)
+                        val known = record(photo.key, hash) ?: break
+                        if (known.action == ScanContentAction.SKIPPED) {
+                            state = state.copy(processed = state.processed + 1, skipped = state.skipped + 1); progress(state); continue
+                        }
+                        val classifier = detector ?: detectorFactory().also { detector = it }
+                        val bitmap = detectionBitmap(photo.uri)
+                        val person = try { classifier.containsPerson(bitmap) } finally { bitmap.recycle() }
+                        if (stop.get()) break
+                        if (person) {
+                            val time = store.photoTime(photo.uri) ?: photo.taken
+                            imported = store.importPhoto(photo.uri)
+                            // Verify the bytes actually copied, in case the source changed during classification.
+                            val copied = store.importedPhotoFingerprint(imported)
+                            check(copied.hash == hash) { "图片正在变化，请重新扫描" }
+                            val result = record(photo.key, copied.hash, time, imported, complete = true) ?: break
+                            if (result.action == ScanContentAction.ADDED) {
+                                index!!.added(copied, result.generation)
+                                imported = null // Candidate and checkpoint committed; they own this file now.
+                                state = state.copy(processed = state.processed + 1, matched = state.matched + 1)
+                            } else {
+                                check(result.action == ScanContentAction.SKIPPED)
+                                state = state.copy(processed = state.processed + 1, skipped = state.skipped + 1)
+                            }
+                        } else {
+                            // Confirm the source still has the bytes that were classified.
+                            check(store.originalPhotoDigest(photo.uri) == hash) { "图片正在变化，请重新扫描" }
+                            val result = record(photo.key, hash, complete = true) ?: break
+                            index!!.completed(hash, result.generation)
+                            state = state.copy(processed = state.processed + 1,
+                                skipped = state.skipped + if (result.action == ScanContentAction.SKIPPED) 1 else 0)
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: SecurityException) { throw SecurityException("相册权限已变更，已有候选已保留，请重新授权后继续") }
+                    catch (_: Exception) { state = state.copy(processed = state.processed + 1, failed = state.failed + 1) }
+                    finally { imported?.let { java.io.File(store.mediaDir, it).delete() } }
+                    progress(state)
+                }
+            } finally { detector?.close() }
         }
         state.copy(running = false, stopping = false).also(progress)
     }

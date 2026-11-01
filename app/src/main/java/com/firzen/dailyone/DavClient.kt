@@ -53,7 +53,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
         return call.execute()
     }
     override fun ensureCollections() {
-        listOf("", "entries/", "photos/", "notebooks/").forEach { path ->
+        listOf("", "entries/", "photos/", "notebooks/", "scan-history/", "scan-history-batches/").forEach { path ->
             request("MKCOL", path).use { r ->
                 if (r.code !in listOf(201, 405)) fail(r.code)
             }
@@ -62,6 +62,39 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
     override fun listEntries(): Map<String, String> = listDocuments("entries")
     override fun listNotebooks(): Map<String, String> = listDocuments("notebooks")
     override fun listPhotos(): Set<String> = listDocuments("photos").keys
+    override fun listScanHashes() = listDocuments("scan-history").keys
+    override fun getScanHash(hash: String) {
+        require(validScanHash(hash))
+        request("GET", "scan-history/$hash.json").use { r ->
+            if (!r.isSuccessful) fail(r.code)
+            validateScanHistory(String(bounded(r, 4096), Charsets.UTF_8), hash)
+        }
+    }
+    override fun putScanHash(hash: String) {
+        val data = scanHistoryJson(hash).toByteArray(Charsets.UTF_8)
+        // This immutable key has exactly one valid payload, even on servers ignoring conditions.
+        request("PUT", "scan-history/$hash.json", data,
+            mapOf("If-None-Match" to "*", "Content-Type" to "application/json; charset=utf-8")).use { r ->
+            if (!r.isSuccessful && r.code != 412) fail(r.code)
+        }
+        getScanHash(hash)
+    }
+    override fun listScanBatches() = listDocuments("scan-history-batches").keys
+    override fun getScanBatch(id: String): String {
+        require(validScanHash(id))
+        return request("GET", "scan-history-batches/$id.json").use { r ->
+            if (!r.isSuccessful) fail(r.code)
+            String(bounded(r, SCAN_BATCH_LIMIT), Charsets.UTF_8).also { parseScanBatch(id, it) }
+        }
+    }
+    override fun putScanBatch(id: String, document: String) {
+        parseScanBatch(id, document)
+        request("PUT", "scan-history-batches/$id.json", document.toByteArray(Charsets.UTF_8),
+            mapOf("If-None-Match" to "*", "Content-Type" to "application/json; charset=utf-8")).use { r ->
+            if (!r.isSuccessful && r.code != 412) fail(r.code)
+        }
+        getScanBatch(id)
+    }
     private fun listDocuments(collection: String): Map<String, String> {
         val xml = """<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>"""
         val bytes = request("PROPFIND", "$collection/", xml.toByteArray(), mapOf("Depth" to "1", "Content-Type" to "application/xml")).use { r ->
@@ -94,6 +127,10 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
                 }
                 if (!name.endsWith(".json")) continue
                 val id = name.removeSuffix(".json")
+                if (collection == "scan-history" || collection == "scan-history-batches") {
+                    if (validScanHash(id)) put(id, "")
+                    continue
+                }
                 if (!validId(id)) continue
                 val tag = node.getElementsByTagNameNS("DAV:", "getetag").item(0)?.textContent?.trim()
                 require(!tag.isNullOrBlank() && !tag.startsWith("W/")) { "WebDAV 需要支持强 ETag，以安全同步日记" }

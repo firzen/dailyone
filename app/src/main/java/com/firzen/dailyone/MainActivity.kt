@@ -276,7 +276,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
                     item(key = "photo-scan") {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 7.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(if (scan.running) "${if (scan.stopping) "停止中" else "扫描中"} ${scan.processed}/${scan.total} · 人物 ${scan.matched}" else "人物照片生成日记", fontSize = 13.sp)
+                                Text(if (scan.running) { if (scan.stopping) "停止中" else scan.stage.ifBlank { "扫描中 ${scan.processed}/${scan.total} · 人物 ${scan.matched}" } } else "人物照片生成日记", fontSize = 13.sp)
                                 Text("共 ${entries.size} 篇 · 待确认 ${entries.count { it.candidate }} 篇 · 仅扫描已授权照片", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             TextButton(onClick = if (scan.running) stopScan else startScan, enabled = !loading && !busy && !scan.stopping) { Text(if (scan.running) "停止扫描" else "扫描照片") }

@@ -22,7 +22,8 @@ class SyncEngine(private val store: JournalStore, private val storageFactory: (C
             config.validate()
             local { store.bindSyncTarget(config.targetId()) }
             val storage = storageFactory(config)
-            storage.observeRequests { stage -> progress(SyncProgress(true, currentPercent, stage)) }
+            var historyStatus = ""
+            storage.observeRequests { stage -> progress(SyncProgress(true, currentPercent, stage + historyStatus)) }
             val cancellation = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
                 try { awaitCancellation() } finally { storage.cancelRequests() }
             }
@@ -32,11 +33,28 @@ class SyncEngine(private val store: JournalStore, private val storageFactory: (C
                 storage.connectionDetail?.let { report(1, it) }
                 val books = storage.listNotebooks()
                 val entries = storage.listEntries()
+                val scanHashes = storage.listScanHashes()
+                val remoteBatches = storage.listScanBatches()
                 var conflicts = 0
                 var downloaded = 0
-                val remoteTotal = (books.size + entries.size).coerceAtLeast(1)
-                fun checked() { downloaded++; report(5 + 40 * downloaded / remoteTotal, "检查云端 $downloaded/${books.size + entries.size}") }
+                val remoteTotal = (books.size + entries.size + scanHashes.size + remoteBatches.size).coerceAtLeast(1)
+                fun checked() { downloaded++; report(5 + 40 * downloaded / remoteTotal, "检查云端 $downloaded/${books.size + entries.size + scanHashes.size + remoteBatches.size}") }
                 report(5, "检查云端记录")
+                val knownBatches = store.knownScanBatches()
+                for (id in remoteBatches) {
+                    currentCoroutineContext().ensureActive()
+                    if (id !in knownBatches) store.acceptScanBatch(id, storage.getScanBatch(id))
+                    checked()
+                }
+                val knownHashes = store.scanHistoryHashes() - store.scanHistoryHashes(pendingOnly = true)
+                for (hash in scanHashes) {
+                    currentCoroutineContext().ensureActive()
+                    if (hash !in knownHashes) {
+                        storage.getScanHash(hash)
+                        store.acceptScanHash(hash)
+                    }
+                    checked()
+                }
                 for ((id, etag) in books) {
                     currentCoroutineContext().ensureActive()
                     if (local { store.notebooks.value.firstOrNull { it.id == id }?.etag != etag }) {
@@ -84,10 +102,15 @@ class SyncEngine(private val store: JournalStore, private val storageFactory: (C
                     }
                     checked()
                 }
+                report(45, "整理扫描去重记录")
+                store.photoScanIndex(progress = { done, total -> report(45, "整理扫描去重记录 $done/$total") })
+                val pendingBatches = store.pendingScanBatches()
+                val historyTotal = store.scanHistoryHashes().size
+                val historyRemaining = store.scanHistoryHashes(pendingOnly = true).toMutableSet()
                 val pendingBooks = local { store.notebooks.value.filter { it.dirty } }
                 val pendingEntries = local { store.entries.value.filter { it.dirty && it.syncable }.sortedBy { it.deleted } }
                 val remotePhotos = if (pendingEntries.any { !it.deleted && it.attachments.isNotEmpty() }) storage.listPhotos().toMutableSet() else mutableSetOf()
-                val total = pendingBooks.size + pendingEntries.sumOf { 1 + if (it.deleted) 0 else it.attachments.size }
+                val total = pendingBatches.size + pendingBooks.size + pendingEntries.sumOf { 1 + if (it.deleted) 0 else it.attachments.size }
                 var done = 0
                 fun uploaded() { done++; report(45 + 54 * done / total.coerceAtLeast(1), "上传 $done/$total") }
                 report(45, "准备上传")
@@ -118,6 +141,17 @@ class SyncEngine(private val store: JournalStore, private val storageFactory: (C
                         if (latest != null) store.write(latest.copy(dirty = latest != entry, etag = tag))
                     }
                     uploaded()
+                }
+                for (batch in pendingBatches) {
+                    currentCoroutineContext().ensureActive()
+                    historyStatus = " · 已完成 ${historyTotal - historyRemaining.size}/$historyTotal"
+                    report(currentPercent, "上传去重记录$historyStatus")
+                    storage.putScanBatch(batch.id, batch.document)
+                    // Batch payload and acknowledgement are durable together, including after process death.
+                    store.acceptScanBatch(batch.id, batch.document)
+                    historyRemaining.removeAll(batch.hashes.toSet())
+                    uploaded()
+                    report(currentPercent, "上传去重记录 · 已完成 ${historyTotal - historyRemaining.size}/$historyTotal")
                 }
                 report(100, "同步完成")
                 conflicts

@@ -234,7 +234,7 @@ class WebDavDeviceVerificationTest {
         var retriedToken: String? = null
         val verifyRetry = InstrumentationRegistry.getArguments().getString("verifyRetry") == "true"
         val failFirst = java.util.concurrent.atomic.AtomicBoolean(verifyRetry)
-        val previousFactory = SyncRuntime.davFactory
+        val previousFactory = SyncRuntime.storageFactory
         val requests = java.util.concurrent.CopyOnWriteArrayList<String>()
         val flaky = client.newBuilder().retryOnConnectionFailure(false).addInterceptor { chain ->
             if (failFirst.compareAndSet(true, false)) throw java.io.IOException("simulated connection interruption")
@@ -251,7 +251,7 @@ class WebDavDeviceVerificationTest {
             isolated.write(entry)
             repeat(2) { isolated.write(Entry(body = "additional background test")) }
             field.set(SyncRuntime, isolated)
-            SyncRuntime.davFactory = { DavClient(it, flaky) }
+            SyncRuntime.storageFactory = { DavClient(it, flaky) }
             scenario = androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java)
             var vm: JournalViewModel? = null
             scenario.onActivity { vm = androidx.lifecycle.ViewModelProvider(it)[JournalViewModel::class.java] }
@@ -313,7 +313,7 @@ class WebDavDeviceVerificationTest {
                 kotlinx.coroutines.runBlocking {
                     reopened.load()
                     requests.clear()
-                    SyncEngine(reopened, SyncRuntime.davFactory).sync(saved.copy(url = base))
+                    SyncEngine(reopened, SyncRuntime.storageFactory).sync(saved.copy(url = base))
                     check(requests.none { it == "GET" || it == "PUT" || it == "MOVE" })
                 }
             } finally { reopened.close() }
@@ -324,7 +324,7 @@ class WebDavDeviceVerificationTest {
             kotlinx.coroutines.runBlocking { SyncRuntime.cancel(context) }
             await { !SyncRuntime.progress.value.running && !SyncRuntime.progress.value.waiting }
             field.set(SyncRuntime, previous)
-            SyncRuntime.davFactory = previousFactory
+            SyncRuntime.storageFactory = previousFactory
             isolated.close(); context.deleteDatabase(db); isolated.mediaDir.deleteRecursively()
             directory("DELETE").use { check(it.isSuccessful || it.code == 404) }
             local?.close()
@@ -344,7 +344,7 @@ class WebDavDeviceVerificationTest {
         val store = JournalStore(context, "dav-controls-$token.db", "dav-controls-$token")
         val field = SyncRuntime::class.java.getDeclaredField("journal").apply { isAccessible = true }
         val previous = field.get(SyncRuntime)
-        val factory = SyncRuntime.davFactory
+        val factory = SyncRuntime.storageFactory
         fun await(condition: () -> Boolean) {
             val deadline = android.os.SystemClock.elapsedRealtime() + 30_000
             while (!condition()) { check(android.os.SystemClock.elapsedRealtime() < deadline) { "Sync control timeout" }; Thread.sleep(50) }
@@ -356,7 +356,7 @@ class WebDavDeviceVerificationTest {
             field.set(SyncRuntime, store)
             val requested = java.util.concurrent.atomic.AtomicInteger()
             val client = fixture.client.newBuilder().addInterceptor { chain -> requested.incrementAndGet(); chain.proceed(chain.request()) }.build()
-            SyncRuntime.davFactory = { DavClient(it, client) }
+            SyncRuntime.storageFactory = { DavClient(it, client) }
             fixture.stallNext.set(true)
             SyncRuntime.start(context, fixture.config)
             await { fixture.stalled.get() > 0 && SyncRuntime.progress.value.running }
@@ -389,7 +389,7 @@ class WebDavDeviceVerificationTest {
             inst.sendStatus(0, android.os.Bundle().apply { putString("stream", "SYNC_DIAG pause-persistence-continue-stop-and-network-cancel=OK\n") })
         } finally {
             kotlinx.coroutines.runBlocking { SyncRuntime.cancel(context) }
-            field.set(SyncRuntime, previous); SyncRuntime.davFactory = factory
+            field.set(SyncRuntime, previous); SyncRuntime.storageFactory = factory
             store.close(); context.deleteDatabase("dav-controls-$token.db"); store.mediaDir.deleteRecursively()
             fixture.close()
             if (originalPending != null) SyncRuntime.start(context, originalPending, initiallyPaused = originallyPaused)

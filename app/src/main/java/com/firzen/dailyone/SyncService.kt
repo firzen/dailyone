@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
 object SyncRuntime {
     private var journal: JournalStore? = null
     @Synchronized fun store(context: Context): JournalStore = journal ?: JournalStore(context.applicationContext).also { journal = it }
-    internal var davFactory: (CloudConfig) -> DavClient = { DavClient(it) }
+    internal var storageFactory: (CloudConfig) -> CloudStorage = ::cloudStorage
     internal val controls = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     internal val sessionLock = Mutex()
     val progress = MutableStateFlow(SyncProgress())
@@ -105,7 +105,7 @@ class SyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWork
             setForeground(getForegroundInfo())
             SyncRuntime.progress.value = SyncProgress(true, stage = "准备同步")
             val config = withContext(Dispatchers.IO) { SyncRuntime.config(applicationContext) }
-            check(config.url.isNotBlank()) { "请先配置 WebDAV 云存储" }
+            check(config.configured) { "请先配置云存储" }
             val store = SyncRuntime.store(applicationContext)
             store.load()
             var conflicts = 0
@@ -114,7 +114,7 @@ class SyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWork
                 currentCoroutineContext().ensureActive()
                 round++
                 var shown = -1
-                conflicts += SyncEngine(store, SyncRuntime.davFactory).sync(config) { state ->
+                conflicts += SyncEngine(store, SyncRuntime.storageFactory).sync(config) { state ->
                     if (SyncRuntime.token(applicationContext) != token || SyncRuntime.isPaused(applicationContext)) throw CancellationException("同步已暂停或停止")
                     val stage = if (state.percent == 100) "检查新增修改" else state.stage
                     val displayed = state.copy(percent = state.percent.coerceAtMost(99), stage = if (round > 1) "续传新增修改 · $stage" else stage)

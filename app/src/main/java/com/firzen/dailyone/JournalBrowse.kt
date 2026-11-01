@@ -229,13 +229,22 @@ internal data class JournalCollection(val title: String, val ids: List<String>, 
         if (locationError.isNotBlank()) Text(locationError, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
-                active == PlaceProvider.AMAP && androidKey.isBlank() -> Text("高德地图暂不可用，可切换 Google 地图", Modifier.align(Alignment.Center).padding(24.dp))
+                active == PlaceProvider.AMAP && androidKey.isBlank() || active == PlaceProvider.GOOGLE && !BuildConfig.GOOGLE_MAPS_CONFIGURED -> Column(Modifier.fillMaxSize()) {
+                    WebMapPanel(active, gps ?: located.firstOrNull()?.location, Modifier.fillMaxWidth().padding(16.dp))
+                    LazyColumn(Modifier.weight(1f)) {
+                        items(located, key = { it.id }) { entry ->
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { pick(listOf(entry.id)) }, modifier = Modifier.weight(1f)) { Text(entry.location!!.label()) }
+                                WebMapButton(active, entry.location)
+                            }
+                        }
+                    }
+                }
                 active == PlaceProvider.AMAP && !privacyAgreed -> Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("地图由高德提供，用于浏览日记位置。启用前请阅读高德隐私政策。")
                     TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://lbs.amap.com/pages/privacy/"))) }) { Text("高德隐私政策") }
                     Button(onClick = agreePrivacy) { Text("同意并启用地图") }
                 }
-                active == PlaceProvider.GOOGLE && !BuildConfig.GOOGLE_MAPS_CONFIGURED -> Text("Google 地图暂不可用，可切换高德地图", Modifier.align(Alignment.Center).padding(24.dp))
                 else -> key(active) {
                     if (active == PlaceProvider.AMAP) AmapMapPanel(androidKey, center?.takeIf { it.coordinateSystem == CoordinateSystem.GCJ02 }, { userMoved = true }, Modifier.fillMaxSize(), points = points, pick = pick, fitPoints = !userMoved && gps == null && state.camera == null, initialCamera = state.camera, cameraChanged = { if (center != null || points.isNotEmpty() || userMoved) state.camera = it })
                     else GoogleMapPanel(center?.takeIf { it.coordinateSystem == CoordinateSystem.WGS84 }, { userMoved = true }, Modifier.fillMaxSize(), points = points, pick = pick, fitPoints = !userMoved && gps == null && state.camera == null, initialCamera = state.camera, cameraChanged = { if (center != null || points.isNotEmpty() || userMoved) state.camera = it })

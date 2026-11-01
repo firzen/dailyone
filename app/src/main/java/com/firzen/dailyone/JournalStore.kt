@@ -17,7 +17,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-class JournalStore(context: Context, databaseName: String = "journal.db", photoDirectoryName: String = "photos") : SQLiteOpenHelper(context, databaseName, null, 4) {
+class JournalStore(context: Context, databaseName: String = "journal.db", photoDirectoryName: String = "photos") : SQLiteOpenHelper(context, databaseName, null, 5) {
     private val appContext = context.applicationContext
     val mediaDir = File(context.filesDir, photoDirectoryName).apply { mkdirs() }
     val notebooks = MutableStateFlow<List<Notebook>>(emptyList())
@@ -30,6 +30,7 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         createScanTable(db)
         createPhotoSources(db)
         createNotebooks(db)
+        db.execSQL("CREATE TABLE sync_state (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
     }
     private fun createNotebooks(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS notebooks (id TEXT PRIMARY KEY, document TEXT NOT NULL, dirty INTEGER NOT NULL, etag TEXT)")
@@ -83,6 +84,7 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         }
         if (oldVersion < 3) createPhotoSources(db)
         if (oldVersion < 4) createNotebooks(db)
+        if (oldVersion < 5) db.execSQL("CREATE TABLE IF NOT EXISTS sync_state (name TEXT PRIMARY KEY, value TEXT NOT NULL)")
     }
     suspend fun load() = lock.withLock { withContext(Dispatchers.IO) { refreshNotebooks(); refresh() } }
     private fun read(): List<Entry> = readableDatabase.rawQuery("SELECT document, dirty, etag, candidate, scan_day FROM entries", null).use { c ->
@@ -177,6 +179,19 @@ class JournalStore(context: Context, databaseName: String = "journal.db", photoD
         }
         write(resolved.copy(photoLocations = metadata.filterKeys { it in resolved.photos }, recordedLocation = manual, etag = latest?.etag ?: resolved.etag))
     } }
+    /** Called under the store lock, before any remote operation. Binding and reset commit together. */
+    fun bindSyncTarget(target: String) {
+        val current = readableDatabase.rawQuery("SELECT value FROM sync_state WHERE name='target'", null).use { if (it.moveToFirst()) it.getString(0) else null }
+        if (current == target) return
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL WHERE candidate = 0")
+            writableDatabase.execSQL("UPDATE notebooks SET dirty = 1, etag = NULL")
+            writableDatabase.execSQL("INSERT OR REPLACE INTO sync_state(name,value) VALUES('target',?)", arrayOf(target))
+            writableDatabase.setTransactionSuccessful()
+        } finally { writableDatabase.endTransaction() }
+        refreshNotebooks(); refresh()
+    }
     suspend fun resetSyncBaseline() = lock.withLock { withContext(Dispatchers.IO) {
         writableDatabase.execSQL("UPDATE entries SET dirty = 1, etag = NULL")
         writableDatabase.execSQL("UPDATE notebooks SET dirty = 1, etag = NULL"); refreshNotebooks()

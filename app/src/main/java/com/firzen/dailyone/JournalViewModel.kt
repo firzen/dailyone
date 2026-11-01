@@ -178,6 +178,12 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                 val provider = if (providerWasChosen) placeProvider else places.defaultProvider(point)
                 if (session != placeSession || revision != mapRevision) return@launch
                 placeProvider = provider
+                val lookupAvailable = if (provider == PlaceProvider.AMAP) amapKey.isNotBlank() else googleKey.isNotBlank()
+                val mapAvailable = if (provider == PlaceProvider.AMAP) amapAndroidKey.isNotBlank() else BuildConfig.GOOGLE_MAPS_CONFIGURED
+                if (!lookupAvailable || !mapAvailable) {
+                    mapCenter = point; mapAnchor = point
+                    return@launch
+                }
                 val mapped = places.mapCoordinate(point, provider)
                 if (session != placeSession || revision != mapRevision) return@launch
                 mapCenter = mapped; mapAnchor = mapped
@@ -292,7 +298,10 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                     ?: error("暂未获取到当前位置，仍可搜索地点或稍后重试")
                 if (session != placeSession) return@launch
                 currentPlace = point
-                val named = try { if (providerWasChosen) places.reverse(point, placeProvider) else places.reverse(point) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+                val named = try {
+                    val provider = if (providerWasChosen) placeProvider else places.defaultProvider(point)
+                    if ((if (provider == PlaceProvider.AMAP) amapKey else googleKey).isBlank()) null else places.reverse(point, provider)
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
                 if (session == placeSession) {
                     currentPlace = named ?: point
                     if (!cityWasEdited && !mapUserInteracted) searchCity = currentPlace?.city.orEmpty()
@@ -519,7 +528,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         photoTimePrompt = null
     }
     fun configure(input: CloudConfig, onSaved: () -> Unit) {
-        val value = input.copy(url = input.url.trim(), username = input.username.trim())
+        val value = input.normalized()
         if (busy) return
         if (syncProgress.running || syncProgress.controlling) { settingsError = "请等待同步完成再修改云存储配置"; return }
         if (scanProgress.running || geoProgress.running || shopProgress.running) { settingsError = "请先停止扫描或原图恢复"; return }
@@ -527,16 +536,11 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         settingsError = null
         viewModelScope.launch {
             try {
-                DavClient(value) // Validate before persisting credentials.
-                val resumeSync = SyncRuntime.token(getApplication()) != null
-                val resumePaused = SyncRuntime.isPaused(getApplication())
-                if (resumeSync) SyncRuntime.cancel(getApplication())
-                if (value.url.trimEnd('/') != config.url.trimEnd('/') || value.username != config.username) {
-                    store.resetSyncBaseline()
-                }
+                value.validate()
+                // Stop and await the old worker, including paused/waiting tasks. Saving never starts a new sync.
+                if (SyncRuntime.token(getApplication()) != null) SyncRuntime.cancel(getApplication())
                 withContext(Dispatchers.IO) { settings.save(value) }
                 config = value
-                if (resumeSync) SyncRuntime.start(getApplication(), value, initiallyPaused = resumePaused)
                 onSaved(); events.send("云存储配置已保存")
             } catch (e: Exception) { settingsError = e.message ?: "配置保存失败" }
             finally { busy = false }
@@ -557,7 +561,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     fun sync() {
         if (scanProgress.running || geoProgress.running || shopProgress.running) { events.trySend("请先停止扫描或定位补全，再同步云存储"); return }
         if (busy || loading || syncProgress.running || pending > 0 || saveFailed) return
-        if (config.url.isBlank()) { events.trySend("请先配置 WebDAV 云存储"); return }
+        if (!config.configured) { events.trySend("请先配置云存储"); return }
         try {
             SyncRuntime.start(getApplication(), config)
         } catch (e: Exception) {

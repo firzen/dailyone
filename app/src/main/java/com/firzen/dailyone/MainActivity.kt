@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.io.File
 import java.time.Instant
@@ -133,7 +134,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     SideEffect {
         WindowCompat.getInsetsController((view.context as Activity).window, view).isAppearanceLightStatusBars = draft != null && !dark
     }
-    LaunchedEffect(vm) { vm.messages.collect { notice ->
+    LaunchedEffect(vm) { vm.messages.collectLatest { notice ->
         if (snackbar.showSnackbar(notice.message, actionLabel = notice.undoId?.let { "撤销" }, duration = if (notice.undoId != null) SnackbarDuration.Long else SnackbarDuration.Short) == SnackbarResult.ActionPerformed) notice.undoId?.let(vm::undo)
     } }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, containerColor = if (draft == null) { if (dark) Color(0xFF252B30) else Color(0xFF333C41) } else MaterialTheme.colorScheme.background) { insets ->
@@ -156,7 +157,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             }
             if (vm.importStatus.isNotEmpty()) Text(vm.importStatus, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp))
             Box(Modifier.weight(1f)) {
-            if (draft == null) key(vm.selectedNotebook) { JournalList(listState, entries, vm.loading, vm.busy, vm.config.url.isNotBlank(),
+            if (draft == null) key(vm.selectedNotebook) { JournalList(listState, entries, vm.loading, vm.busy, vm.config.configured,
                 vm.store.mediaDir, { vm.open(it) }, { vm.open() }, { settingsOpen = true }, vm::sync, vm.scanProgress, startScan, vm::stopScan,
                 { entry, retain -> if (retain) keep(entry) else vm.review(entry.id, false) }, selectedIds, toggleSelection,
                 { selectedIds = emptySet() }, { batchDialog = false }, { mergeNotebook = null; batchDialog = true }, {
@@ -171,7 +172,7 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
             if (vm.locationPickerOpen && draft != null) LocationPicker(vm.currentPlace, draft.location, vm.placeResults,
                 vm.locating, vm.searchingPlaces, vm.placeError, vm::searchPlaces, { vm.prepareCurrentMap(); fetchCurrentPlace() }, vm::selectPlace, vm::closeLocationPicker,
                 vm.placeProvider, vm.searchCity, vm::updatePlaceProvider, vm::updateSearchCity,
-                vm.amapAndroidKey, vm.mapPrivacyAgreed, vm::agreeMapPrivacy, vm.mapCenter, vm.mapPick, vm.nearbyPlaces, vm.resolvingMap, vm::userFocusMap, vm::pickMapCenter, vm.mapAnchor, vm.moreNearby, vm.loadingMoreNearby, vm::loadMoreNearby, mapGeneration = vm.mapGeneration)
+                vm.amapAndroidKey, vm.mapPrivacyAgreed, vm::agreeMapPrivacy, vm.mapCenter, vm.mapPick, vm.nearbyPlaces, vm.resolvingMap, vm::userFocusMap, vm::pickMapCenter, vm.mapAnchor, vm.moreNearby, vm.loadingMoreNearby, vm::loadMoreNearby, mapGeneration = vm.mapGeneration, placesConfigured = if (vm.placeProvider == PlaceProvider.AMAP) vm.amapKey.isNotBlank() else vm.googleKey.isNotBlank())
             batchDialog?.let { merge ->
                 val chosen = entries.filter { it.id in selectedIds }
                 val preview = if (merge && chosen.size > 1) journalBatch(chosen, true, targetNotebook = mergeNotebook ?: chosen.first().notebookId).first().second else null
@@ -517,6 +518,8 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
     var url by remember(config) { mutableStateOf(config.url) }
     var username by remember(config) { mutableStateOf(config.username) }
     var password by remember(config) { mutableStateOf(config.password) }
+    var provider by remember(config) { mutableStateOf(config.provider) }
+    var s3 by remember(config) { mutableStateOf(config.s3) }
     Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("设置", fontSize = 22.sp, fontWeight = FontWeight.Medium)
         OutlinedButton(onClick = importDayOne, enabled = canImport, modifier = Modifier.fillMaxWidth()) { Text("导入 Day One 文件夹") }
@@ -539,16 +542,18 @@ private fun date(time: Long, pattern: String): String = Instant.ofEpochMilli(tim
         OutlinedButton(onClick = refreshShops, enabled = !busy && canRefreshPlaces, modifier = Modifier.fillMaxWidth()) { Text("重新更新已有日记店铺信息") }
         HorizontalDivider()
         Text("云存储", fontSize = 17.sp, fontWeight = FontWeight.Medium)
-        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(10.dp)).padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Cloud, null, tint = MaterialTheme.colorScheme.primary)
-            Text("WebDAV", Modifier.padding(start = 12.dp).weight(1f), fontSize = 16.sp)
-            Text("自定义存储", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            CloudProvider.entries.forEach { option ->
+                FilterChip(selected = provider == option, onClick = { provider = option }, label = { Text(option.label) }, enabled = !busy)
+            }
         }
-        OutlinedTextField(url, { url = it }, label = { Text("服务器地址（HTTPS）") }, placeholder = { Text("https://dav.example.com") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(username, { username = it }, label = { Text("用户名") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(password, { password = it }, label = { Text("密码 / 应用专用密码") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+        if (provider == CloudProvider.WEBDAV) {
+            OutlinedTextField(url, { url = it }, label = { Text("服务器地址（HTTPS）") }, placeholder = { Text("https://dav.example.com") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(username, { username = it }, label = { Text("用户名") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(password, { password = it }, label = { Text("密码 / 应用专用密码") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+        } else S3ConfigForm(s3, { s3 = it }, !busy)
         if (error != null) Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-        Button(onClick = { save(CloudConfig(url.trim(), username, password)) }, enabled = !busy && url.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(15.dp)) { Text("保存配置") }
-        Text("保存后，返回日记列表点“立即同步”。日记始终先保存到本机；云端数据保存在 DailyOne 目录。", fontSize = 12.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Button(onClick = { save(CloudConfig(url, username, password, provider, s3)) }, enabled = !busy && CloudConfig(url, username, password, provider, s3).configured, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(15.dp)) { Text("保存配置") }
+        Text("两种方式只启用当前选择的一种，配置分别保留。保存后返回列表点“立即同步”；切换会重新核对目标数据，本机与旧云端资料保留。", fontSize = 12.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

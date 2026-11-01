@@ -34,7 +34,11 @@ import androidx.compose.ui.window.DialogProperties
     androidKey: String = "", privacyAgreed: Boolean = false, agreePrivacy: () -> Unit = {},
     mapCenter: GeoPoint? = null, mapPick: GeoPoint? = null, nearby: List<GeoPoint> = emptyList(), resolvingMap: Boolean = false,
     focusMap: (GeoPoint) -> Unit = {}, moveMap: (GeoPoint) -> Unit = {}, distanceCenter: GeoPoint? = null,
-    moreNearby: Boolean = false, loadingMoreNearby: Boolean = false, loadMoreNearby: () -> Unit = {}, googleConfigured: Boolean = BuildConfig.GOOGLE_MAPS_CONFIGURED, mapGeneration: Int = 0) {
+    moreNearby: Boolean = false, loadingMoreNearby: Boolean = false, loadMoreNearby: () -> Unit = {}, googleConfigured: Boolean = BuildConfig.GOOGLE_MAPS_CONFIGURED, mapGeneration: Int = 0, placesConfigured: Boolean = true) {
+    if (!placesConfigured || (if (provider == PlaceProvider.AMAP) androidKey.isBlank() else !googleConfigured)) {
+        WebLocationPicker(current, existing, locating, error, provider, changeProvider, retryCurrent, select, close)
+        return
+    }
     val mapProvider = provider
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current

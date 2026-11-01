@@ -11,6 +11,15 @@ val localConfig = Properties().apply {
 val googleMapsKey = (providers.gradleProperty("GOOGLE_MAPS_API_KEY").orNull
     ?: System.getenv("DAILYONE_GOOGLE_MAPS_KEY") ?: localConfig.getProperty("google.maps.api.key", "")).trim()
 require(googleMapsKey.isEmpty() || Regex("AIza[0-9A-Za-z_-]{35}").matches(googleMapsKey)) { "Invalid Google Maps API key configuration" }
+val localPlaceKeys = mapOf(
+    "AMAP_ANDROID_KEY" to localConfig.getProperty("amap.android.api.key", "").trim(),
+    "AMAP_WEB_KEY" to localConfig.getProperty("amap.web.api.key", "").trim(),
+    "GOOGLE_PLACES_KEY" to localConfig.getProperty("google.places.api.key", "").trim()
+)
+localPlaceKeys.forEach { (name, value) ->
+    val pattern = if (name == "GOOGLE_PLACES_KEY") "AIza[0-9A-Za-z_-]{35}" else "[0-9a-fA-F]{32}"
+    require(value.isEmpty() || Regex(pattern).matches(value)) { "Invalid local key configuration: $name" }
+}
 android {
     namespace = "com.firzen.dailyone"
     compileSdk = 35
@@ -22,13 +31,19 @@ android {
         versionName = "0.9.4"
         manifestPlaceholders["googleMapsApiKey"] = googleMapsKey
         buildConfigField("boolean", "GOOGLE_MAPS_CONFIGURED", googleMapsKey.isNotBlank().toString())
+        localPlaceKeys.forEach { (name, value) -> buildConfigField("String", name, "\"$value\"") }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    testOptions.unitTests.all {
+        it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies {
+    // Keep the client and test fixtures aligned with the AWS SDK HTTP engine.
+    val okhttpVersion = "5.0.0-alpha.14"
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
     implementation("androidx.activity:activity-compose:1.9.3")
@@ -43,11 +58,12 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("com.google.mediapipe:tasks-vision:0.10.21")
     implementation("io.coil-kt:coil-compose:2.7.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:$okhttpVersion")
+    implementation("aws.sdk.kotlin:s3:1.3.83")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
-    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
-    androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
-    androidTestImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:$okhttpVersion")
+    androidTestImplementation("com.squareup.okhttp3:mockwebserver:$okhttpVersion")
+    androidTestImplementation("com.squareup.okhttp3:okhttp-tls:$okhttpVersion")
     androidTestImplementation(composeBom)
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
@@ -55,6 +71,7 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("org.json:json:20240303")
-    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("com.squareup.okhttp3:mockwebserver:$okhttpVersion")
 }

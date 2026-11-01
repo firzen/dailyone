@@ -4,14 +4,11 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
-import org.json.JSONObject
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-
-data class CloudConfig(val url: String = "", val username: String = "", val password: String = "")
 
 class CloudSettings(context: Context, preferenceName: String = "cloud", private val keyAlias: String = "dailyone.cloud") {
     private val prefs = context.getSharedPreferences(preferenceName, Context.MODE_PRIVATE)
@@ -28,11 +25,10 @@ class CloudSettings(context: Context, preferenceName: String = "cloud", private 
         val bytes = Base64.decode(stored, Base64.NO_WRAP)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
-        val o = JSONObject(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8))
-        return CloudConfig(o.getString("url"), o.getString("username").trim(), o.getString("password"))
+        return CloudConfig.parse(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8))
     }
     fun save(config: CloudConfig) {
-        val text = JSONObject().put("url", config.url).put("username", config.username.trim()).put("password", config.password).toString()
+        val text = config.normalized().json()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.doFinal(text.toByteArray(Charsets.UTF_8))

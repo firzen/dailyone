@@ -14,7 +14,7 @@ class LocationPickerUiTest {
     @Test fun defaultsToCurrentPlaceAndDoesNotSaveUntilConfirmed() {
         var saved: GeoPoint? = null
         compose.setContent { MaterialTheme { LocationPicker(current, null, emptyList(), false, false, null,
-            {}, {}, { saved = it }, {}) } }
+            {}, {}, { saved = it }, {}, androidKey = "test-key") } }
         compose.waitForIdle()
         compose.runOnIdle { assertNull(saved) }
         compose.onNodeWithText("使用此位置").performClick()
@@ -24,7 +24,7 @@ class LocationPickerUiTest {
         val result = GeoPoint(24.0, 114.0, "河边咖啡", "测试路2号")
         var saved: GeoPoint? = null
         compose.setContent { MaterialTheme { LocationPicker(current, null, listOf(result), false, false, null,
-            {}, {}, { saved = it }, {}) } }
+            {}, {}, { saved = it }, {}, androidKey = "test-key") } }
         compose.onNodeWithText("河边咖啡").performScrollTo().performClick()
         compose.onNodeWithText("修改店名").performScrollTo().performClick()
         compose.onNodeWithText("地点名称 / 店名").performScrollTo().performTextReplacement("河边咖啡旗舰店")
@@ -36,7 +36,7 @@ class LocationPickerUiTest {
         val gps = mutableStateOf<GeoPoint?>(null)
         var saved: GeoPoint? = null
         compose.setContent { MaterialTheme { LocationPicker(gps.value, existing, emptyList(), false, false, null,
-            {}, {}, { saved = it }, {}) } }
+            {}, {}, { saved = it }, {}, androidKey = "test-key") } }
         compose.runOnIdle { gps.value = current }
         compose.onNodeWithText("当前位置").assertDoesNotExist()
         compose.onNodeWithText(current.name).assertDoesNotExist()
@@ -50,7 +50,7 @@ class LocationPickerUiTest {
         val nearby = mutableStateOf(listOf(first))
         var saved: GeoPoint? = null
         compose.setContent { MaterialTheme { LocationPicker(current, current, emptyList(), false, false, null,
-            {}, {}, { saved = it }, {}, mapPick = pick.value, nearby = nearby.value) } }
+            {}, {}, { saved = it }, {}, androidKey = "test-key", mapPick = pick.value, nearby = nearby.value) } }
         compose.onNodeWithText(first.name).assertExists()
         compose.runOnIdle { pick.value = next; nearby.value = listOf(next) }
         compose.onNodeWithText(first.name).assertDoesNotExist()
@@ -63,7 +63,7 @@ class LocationPickerUiTest {
         val more = mutableStateOf(true)
         var requests = 0
         compose.setContent { MaterialTheme { LocationPicker(current, null, emptyList(), false, false, null,
-            {}, {}, {}, {}, nearby = places.value, moreNearby = more.value, loadMoreNearby = {
+            {}, {}, {}, {}, androidKey = "test-key", nearby = places.value, moreNearby = more.value, loadMoreNearby = {
                 requests++; places.value = places.value + current.copy(name = "下一页地点", poiId = "next"); more.value = false
             }) } }
         compose.runOnIdle { assertEquals(0, requests) }
@@ -78,7 +78,7 @@ class LocationPickerUiTest {
         val existing = current.copy(poiId = "existing")
         val nearby = listOf(existing.copy(coordinateSystem = CoordinateSystem.GCJ02), current.copy(name = "另一个地点", poiId = "other"))
         compose.setContent { MaterialTheme { LocationPicker(current, existing, emptyList(), false, false, null,
-            {}, {}, {}, {}, nearby = nearby) } }
+            {}, {}, {}, {}, androidKey = "test-key", nearby = nearby) } }
         compose.onAllNodesWithText(existing.name).assertCountEquals(1)
         compose.onNodeWithText("日记现有位置").assertExists()
         compose.onNodeWithText("另一个地点").assertExists()
@@ -88,9 +88,9 @@ class LocationPickerUiTest {
         var saved: GeoPoint? = null
         compose.setContent { MaterialTheme { LocationPicker(null, overseas, emptyList(), false, false, null,
             {}, {}, { saved = it }, {}, distanceCenter = overseas, googleConfigured = false) } }
-        compose.onNodeWithText("Google 地图暂不可用，可尝试切换地图服务").assertExists()
+        compose.onNodeWithText("已使用网页地图备用方案").assertExists()
         compose.onNodeWithText("使用此位置").performClick()
-        compose.runOnIdle { assertEquals(overseas.copy(nameOrigin = PlaceNameOrigin.POI), saved) }
+        compose.runOnIdle { assertEquals(overseas, saved) }
     }
 
     @Test fun providerMenuContainsOnlyAmapAndGoogleAndCallsTheSwitchAction() {
@@ -98,7 +98,6 @@ class LocationPickerUiTest {
         var switches = 0
         compose.setContent { MaterialTheme { LocationPicker(current, current, emptyList(), false, false, null,
             {}, {}, {}, {}, provider = provider.value, changeProvider = { provider.value = it; switches++ }, googleConfigured = false) } }
-        compose.onNodeWithText("高德").performClick()
         compose.onNodeWithText("Google").assertExists().performClick()
         compose.onNodeWithText("Google").assertExists()
         compose.onNodeWithText("中国大陆").assertDoesNotExist()

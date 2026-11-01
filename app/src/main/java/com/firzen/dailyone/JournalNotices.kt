@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 
 data class JournalNotice(val message: String, val undoId: String? = null)
 class JournalNotices {
-    private val channel = Channel<JournalNotice>(Channel.UNLIMITED)
+    private val channel = Channel<JournalNotice>(Channel.CONFLATED)
     val flow = channel.receiveAsFlow()
     suspend fun send(message: String) { channel.send(JournalNotice(message)) }
     fun trySend(message: String) { channel.trySend(JournalNotice(message)) }

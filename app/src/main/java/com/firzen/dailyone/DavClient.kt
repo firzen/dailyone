@@ -17,7 +17,7 @@ import javax.xml.parsers.DocumentBuilderFactory
 
 class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpClient.Builder()
     .connectTimeout(20, TimeUnit.SECONDS).readTimeout(40, TimeUnit.SECONDS)
-    .callTimeout(60, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()) {
+    .callTimeout(60, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()) : CloudStorage {
     private val root: HttpUrl
     private val auth = Credentials.basic(config.username.trim(), config.password)
     init {
@@ -40,7 +40,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
     }
     private var cancelled = false
     private var activeCall: okhttp3.Call? = null
-    @Synchronized fun cancelRequests() {
+    @Synchronized override fun cancelRequests() {
         cancelled = true
         activeCall?.cancel()
     }
@@ -52,16 +52,16 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
         }
         return call.execute()
     }
-    fun ensureCollections() {
+    override fun ensureCollections() {
         listOf("", "entries/", "photos/", "notebooks/").forEach { path ->
             request("MKCOL", path).use { r ->
                 if (r.code !in listOf(201, 405)) fail(r.code)
             }
         }
     }
-    fun listEntries(): Map<String, String> = listDocuments("entries")
-    fun listNotebooks(): Map<String, String> = listDocuments("notebooks")
-    fun listPhotos(): Set<String> = listDocuments("photos").keys
+    override fun listEntries(): Map<String, String> = listDocuments("entries")
+    override fun listNotebooks(): Map<String, String> = listDocuments("notebooks")
+    override fun listPhotos(): Set<String> = listDocuments("photos").keys
     private fun listDocuments(collection: String): Map<String, String> {
         val xml = """<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>"""
         val bytes = request("PROPFIND", "$collection/", xml.toByteArray(), mapOf("Depth" to "1", "Content-Type" to "application/xml")).use { r ->
@@ -101,7 +101,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
             }
         }
     }
-    fun getEntry(id: String): Entry = request("GET", "entries/$id.json").use { r ->
+    override fun getEntry(id: String): Entry = request("GET", "entries/$id.json").use { r ->
         if (!r.isSuccessful) fail(r.code)
         val tag = r.header("ETag")
         require(!tag.isNullOrBlank() && !tag.startsWith("W/")) { "服务器未提供有效 ETag" }
@@ -109,7 +109,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
         require(entry.id == id) { "日记编号与文件不一致" }
         entry
     }
-    fun putEntry(entry: Entry): String? {
+    override fun putEntry(entry: Entry): String? {
         val condition = entry.etag?.let { mapOf("If-Match" to it) } ?: mapOf("If-None-Match" to "*")
         return putDocument("entries/${entry.id}.json", entry.json().toByteArray(Charsets.UTF_8), condition)
     }
@@ -154,13 +154,13 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
         }
     }
 
-    fun getNotebook(id: String): Notebook = request("GET", "notebooks/$id.json").use { r ->
+    override fun getNotebook(id: String): Notebook = request("GET", "notebooks/$id.json").use { r ->
         if (!r.isSuccessful) fail(r.code)
         val tag = r.header("ETag")
         require(!tag.isNullOrBlank() && !tag.startsWith("W/")) { "日记本需要强 ETag" }
         Notebook.parse(String(bounded(r, 65536), Charsets.UTF_8), tag).also { require(it.id == id) }
     }
-    fun putNotebook(book: Notebook): String {
+    override fun putNotebook(book: Notebook): String {
         val condition = book.etag?.let { mapOf("If-Match" to it) } ?: mapOf("If-None-Match" to "*")
         return putDocument("notebooks/${book.id}.json", book.json().toByteArray(Charsets.UTF_8), condition)
     }
@@ -175,7 +175,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
             if (!r.isSuccessful && r.code != 412) fail(r.code)
         }
     }
-    fun putPhoto(name: String, file: File) {
+    override fun putPhoto(name: String, file: File) {
         require(validPhoto(name))
         val mime = when (name.substringAfterLast('.')) {
             "jpg", "jpeg" -> "image/jpeg"; "png" -> "image/png"; "webp" -> "image/webp"
@@ -191,7 +191,7 @@ class DavClient(config: CloudConfig, private val client: OkHttpClient = OkHttpCl
             .header("If-None-Match", "*").put(file.asRequestBody(mime.toMediaType())).build()
         execute(req).use { if (!it.isSuccessful && it.code != 412) fail(it.code) }
     }
-    fun downloadPhoto(name: String, destination: File) {
+    override fun downloadPhoto(name: String, destination: File) {
         require(validPhoto(name))
         request("GET", "photos/$name").use { response ->
             if (!response.isSuccessful) fail(response.code)
